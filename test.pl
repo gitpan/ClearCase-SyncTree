@@ -17,4 +17,11 @@ open(STDERR, ">&STDOUT");
 use ClearCase::SyncTree;
 $final += printok(1);
 
+print <<EOF;
+
+It's impractical to do real tests at install time since (a) a great
+deal depends on your local view/VOB configuration and (b) it makes
+permanent changes to a local VOB, so we just test that it loads ok.
+EOF
+
 exit $final;

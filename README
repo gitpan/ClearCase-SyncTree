@@ -17,6 +17,9 @@ the purpose it was originally designed for.
 Full documentation for both module and program is provided as inline
 POD format.
 
+Note that there's also a supported CC program 'clearfsimport' which
+does much of what synctree does.
+
 			DIFFERENCES FROM CITREE
 
 Differences between synctree and citree include:
@@ -30,38 +33,52 @@ Differences between synctree and citree include:
 
 			DIFFERENCES FROM CLEARFSIMPORT
 
-As of ClearCase 4.1 there's a new 'clearfsimport' tool which will have
+As of ClearCase 4.2 there's a new 'clearfsimport' tool which will have
 the effect of obsoleting citree and many uses of synctree. However
 there remain some cases where synctree may be preferred. For instance:
 
-1. Synctree works with CC versions prior to 4.1.
+1. Synctree works with CC versions prior to 4.2.
 
-2. Synctree handles MVFS->MVFS transfers while preserving CR's whereas
-clearfsimport does flat_file_system->MVFS only.
+2. Synctree can preserve CR's during MVFS->MVFS transfers whereas
+clearfsimport does flat_file_system->MVFS only (more properly, it
+treats the source files as flat files whether they're in MVFS or not).
 
-3. Synctree has support for remapping filenames in transit and a
--Narrow option for limiting the set of files to transfer.
+3. Synctree has support for remapping filenames "en passant" and a
+-Narrow option for limiting the set of files to transfer via
+regular expression.
 
 4. A Perl API (ClearCase::SyncTree) is provided for custom tool
 development whereas clearfsimport is a command-line interface only.
 
-5. Synctree may at some point (but does not yet) have support for
-"element retention". I.e. if an element is added in one pass and then
-removed (rmnamed) in a subsequent pass and if a third pass would make
-another element of the same name, synctree could optionally make a link
-to the existing file instead of creating what might be a "evil twin".
+5. Synctree has support for "element retention". I.e. if an element is
+added in one pass and then removed (rmnamed) in a subsequent pass, and
+if a third pass would make another element of the same name, synctree
+can optionally (-reuse) relink to the existing element instead of
+creating what might be considered an "evil twin".
 
-But in most cases the supported, integrated solution is to be
-preferred and clearfsimport has advantages over synctree which aren't
-discussed here (at the least it's somewhat faster though neither could
-be described as quick).
+6. And of course SyncTree is freeware, with all the attendant
+advantages (fix it yourself) and disadvantages (fix it yourself) of
+freeware.
 
-			PLATFORM NOTE
+But in most cases the supported, integrated solution is to be preferred
+and clearfsimport has advantages over synctree which aren't discussed
+here, such as mastership handling (-master) and the ability to go
+somewhat deeper into the database than an aftermarket tool
+(-nsetevent).  And of course it doesn't require you to have a modern
+(5.6.0+) Perl and various modules installed. See the clearfsimport
+documentation for details.
+
+			PLATFORM NOTES
 
 This package is believed to work on all ClearCase platforms including
-Windows. Note, however, that while the _module_ has significant Windows
-testing, the synctree wrapper script does not as I don't use it there.
-It does appear to work just fine in limited Windows testing, though.
+Windows. Note, however, that my only test environments are Solaris 8
+and Windows 2000, Perl 5.6. It worked on Solaris 7 and NT 4.0 when I
+last worked there but I have no way to check these or any other
+platforms now.
+
+A sample "synctree.bat" script is provided showing one way of
+invocation on Windows. Other ways (for instance using the .pl file
+extension association) are also possible.
 
 			LATEST VERSION
 

@@ -1,18 +1,20 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.21';
+$VERSION = '0.23';
 
 require 5.004;
 
 use strict;
 
+use Cwd;
 use File::Basename;
 use File::Compare;
 use File::Copy;
 use File::Find;
 use File::Path;
+use File::Spec 0.82;
 
-use ClearCase::Argv 0.21;
+use ClearCase::Argv 1.00;
 
 use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i;
 
@@ -20,24 +22,19 @@ my $lext = '.=lnk=';	# special extension for pseudo-symlinks
 
 sub new {
     my $proto = shift;
-    my($class, $self);
+    my $class;
     if ($class = ref($proto)) {
-	# Make a (deep) clone of the original
-	require Data::Dumper;
-	# Older versions may not have the XS version installed ...
-	if (defined $Data::Dumper::Dumpxs) {
-	    eval Data::Dumper->Deepcopy(1)->new([$proto], ['self'])->Dumpxs;
-	} else {
-	    eval Data::Dumper->Deepcopy(1)->new([$proto], ['self'])->Dump;
-	}
-	return $self;
+	# Make a (deep) clone of the invoking instance
+	require Clone;
+	Clone->VERSION(0.11);	# 0.10 has a known bug
+	return Clone::clone($proto);
     }
     $class = $proto;
-    $self = {};
+    my $self = {};
     bless $self, $class;
     $self->comment('By:' . __PACKAGE__);
     # Default is to sync file modes unless on ^$%#* Windows.
-    $self->protect(!MSWIN);
+    $self->protect(MSWIN ? 0 : 1);
     # Set up a ClearCase::Argv instance with the appropriate attrs.
     $self->ct;
     # By default we'll call SyncTree->fail on any cleartool error.
@@ -50,7 +47,7 @@ sub new {
 sub err_handler {
     my $self = shift;
     my $ct = $self->ct;
-    if (@_ == 2) {
+    if (@_ >= 2) {
 	my($obj, $method) = @_;
 	$method = join('::', ref($obj), $method) unless $method =~ /::/;
 	$ct->autofail([\&$method, $obj]);
@@ -74,7 +71,6 @@ sub ct {
 sub clone_ct {
     my $self = shift;
     my $ct = $self->ct;
-    die __PACKAGE__ . ": Internal Error: incorrect use of ->clone_ct" if !$ct;
     # Since the ct instance may have a ref back to its enclosing
     # instance (i.e. the default error handler is st->ct->st->fail),
     # we have a hack here to keep from cloning that.
@@ -94,8 +90,8 @@ sub protect {
 
 sub reuse {
     my $self = shift;
-    $self->{ST_RECOVER} = shift if @_;
-    return $self->{ST_RECOVER};
+    $self->{ST_REUSE} = shift if @_;
+    return $self->{ST_REUSE};
 }
 
 sub snapdest {
@@ -114,16 +110,93 @@ sub comment {
     my $self = shift;
     my $cmnt = shift;
     if (ref $cmnt) {
-	$self->{ST_CMNT} = $cmnt;
+	$self->{ST_COMMENT} = $cmnt;
     } elsif ($cmnt) {
-	$self->{ST_CMNT} = ['-c', $cmnt];
+	$self->{ST_COMMENT} = ['-c', $cmnt];
     }
-    return $self->{ST_CMNT};
+    return $self->{ST_COMMENT};
+}
+
+sub normalize {
+    my $self = shift;
+    chomp(my $path = shift);
+    my $dv = $self->dstview;
+    my $md = $self->mvfsdrive if MSWIN;
+    for ($path) {
+	if (MSWIN) {
+	    s%^$md:%%;
+	    s%^[\\/]$dv%%;
+	    s%\\%/%g;
+	    $_ = "$md:/$dv$_";
+	} else {
+	    s%^/view/$dv%%;
+	    $_ =  "/view/$dv$_";
+	}
+	s%/\.?$%%;
+    }
+    return $path;
+}
+
+sub _lsprivate {
+    my $self = shift;
+    my $implicit_dirs = shift;
+    my $base = $self->dstbase;
+    my $dv = $self->dstview;
+    my $ct = $self->clone_ct;
+    my @vp;
+    for ($ct->argv('lsp', [qw(-oth -s -inv), $base, '-tag', $dv])->qx) {
+	$_ = $self->normalize($_);
+	push(@vp, $_) if m%^$base/%;
+    }
+    push(@vp, @{$self->{ST_IMPLICIT_DIRS}})
+				if $self->{ST_IMPLICIT_DIRS} && $implicit_dirs;
+    return @vp;
+}
+
+sub _lsco {
+    my $self = shift;
+    my $base = $self->dstbase;
+    my $ct = $self->clone_ct;
+    my %co;
+    for ($ct->argv('lsco', [qw(-s -cvi -a)], $base)->qx) {
+	$_ = $self->normalize($_);
+	$co{$_}++ if m%^$base/% || $_ eq $base;
+    }
+    for my $dir (@{$self->{ST_IMPLICIT_DIRS}}) {
+	$dir = dirname($dir);
+	$co{$dir}++;
+    }
+    return sort keys %co;
+}
+
+sub mvfsdrive {
+    my $self = shift;
+    if (MSWIN && ! $self->{ST_MVFSDRIVE}) {
+	use vars '%RegHash';
+	require Win32::TieRegistry;
+	Win32::TieRegistry->import('TiedHash', '%RegHash');
+	$self->{ST_MVFSDRIVE} = $RegHash{LMachine}->{SYSTEM}->
+		{CurrentControlSet}->{Services}->{Mvfs}->{Parameters}->{drive};
+    }
+    return $self->{ST_MVFSDRIVE};
+}
+
+sub dstview {
+    my $self = shift;
+    $self->{ST_DSTVIEW} = shift if @_;
+    return $self->{ST_DSTVIEW};
 }
 
 sub srcbase {
     my $self = shift;
-    $self->{ST_SRCBASE} = shift if @_;
+    if (@_) {
+	my $sbase = File::Spec->rel2abs(shift);
+	$sbase =~ s%\\%/%g;	# rel2abs forces native (\) separator
+	$sbase =~ s%/\.$%%;	# workaround for bug in File::Spec 0.82
+	# File::Spec::Win32::rel2abs leaves trailing / on drive letter root.
+	$sbase =~ s%/*$%%;
+	$self->{ST_SRCBASE} = $sbase;
+    }
     return $self->{ST_SRCBASE};
 }
 
@@ -131,32 +204,89 @@ sub dstbase {
     my $self = shift;
     if (@_) {
 	my $dbase = shift;
-	$self->{ST_DSTBASE} = $dbase;
-	if (!$self->dstvob) {
-	    my $dvob = ClearCase::Argv->desc(['-s'], "vob:$dbase")->qx;
-	    chomp $dvob;
+	-e $dbase || mkpath($dbase, 0, 0777) || die "$0: Error: $dbase: $!";
+	my $olddir = getcwd;
+	chdir($dbase) || die "$0: Error: $dbase: $!";
+	my $ct = ClearCase::Argv->new({-autofail=>1, -autochomp=>1});
+	my $dv = $ct->pwv(['-s'])->qx;
+	die "$0: Error: destination base ($dbase) not in a view/VOB context"
+						if !$dv || $dv =~ m%\sNONE\s%;
+	$self->dstview($dv);
+	# We need to derive the current vob of the dest path, which we
+	# do by cd-ing there temporarily and running "ct desc -s vob:.".
+	# But with a twist because of @%$*&# Windows.
+	my $dvob;
+	if (!($dvob = $self->dstvob)) {
+	    # We need this weird hack to get a case-correct version of the
+	    # dest path, in case the user typed it in random case. There
+	    # appears to be a bug in CC 4.2; "ct desc vob:foo" fails if
+	    # "foo" is not the right case even if MVFS is set to be
+	    # case insensitive. This is caseid v0869595, bugid CMBU00055321.
+	    # Since Windows mount points must be at the root level,
+	    # we assume the vob tag must be the root dir name. We must
+	    # still then look that up in lsvob to get the tag case right.
+	    if (MSWIN) {
+		my @vobs = $ct->lsvob(['-s'])->qx;
+		my $dirpart = (File::Spec->splitpath($dbase))[1];
+		for my $name (File::Spec->splitdir($dirpart)) {
+		    last if $dvob;
+		    next unless $name;
+		    for my $vob (@vobs) {
+			if ($vob =~ m%^[/\\]$name$%i) {
+			    ($dvob = $vob) =~ s%\\%/%g;
+			    last;
+			}
+		    }
+		}
+	    } else {
+		$dvob = $ct->desc(['-s'], "vob:.")->qx;
+	    }
 	    $self->dstvob($dvob);
 	}
+	# On Windows, normalize the specified dstbase to use the
+	# MVFS drive (typically M:), e.g. M:\view-name\vob-tag\path...
+	# This avoids all kinds of problems with using the view
+	# via a different drive letter or a UNC (\\view) path.
+	# Similarly, on UNIX we normalize to a view-extended path
+	# even if we're already in a set view because it's the
+	# lowest common denominator. Also, if the set view differs
+	# from the 'dest view', the dest view should win.
+	if (MSWIN) {
+	    $dbase =~ s%\\%/%g;
+	    use vars '%RegHash';
+	    require Win32::TieRegistry;
+	    Win32::TieRegistry->import('TiedHash', '%RegHash');
+	    my $mdrive = $self->mvfsdrive;
+	    $dbase = getcwd;
+	    $dbase =~ s%.*?$dvob%$mdrive:/$dv$dvob%i;
+	} else {
+	    $dbase = getcwd;
+	    $dbase =~ s%^/view/$dv%%;
+	    $dbase = "/view/$dv$dbase";
+	}
+	chdir($olddir) || die "$0: Error: $olddir: $!";
+	$self->{ST_DSTBASE} = $dbase;
     }
     return $self->{ST_DSTBASE};
 }
 
-# We may have created a view-private parent tree above, so
-# have to work our way upwards till we get to a versioned dir.
+# We may have created a view-private parent tree, so must
+# work our way upwards till we get to a versioned dir.
 sub _mkbase {
     my $self = shift;
     if (! $self->{ST_MKBASE}) {
 	my $mbase = $self->dstbase;
 	my $dvob = $self->dstvob;
+	(my $dext = $mbase) =~ s%(.*?$dvob)/.*%$1%;
 	my $ct = $self->clone_ct({-stdout=>0, -stderr=>0});
-	$ct->autofail(0);
+	$ct->autofail(0);	# can't be done above, will be lost.
 	while (1) {
-	    last if length($mbase) <= length($dvob);
+	    last if length($mbase) <= length($dext);
 	    last if -d $mbase &&
-			! $ct->argv('desc', ['-s'], "$mbase@@")->system;
+			! $ct->argv('desc', ['-s'], "$mbase/.@@")->system;
+	    push(@{$self->{ST_IMPLICIT_DIRS}}, $mbase);
 	    $mbase = dirname($mbase);
 	}
-	$mbase =~ s%^[a-z]:%%i if MSWIN;
 	$self->{ST_MKBASE} = $mbase;
     }
     return $self->{ST_MKBASE};
@@ -199,7 +329,7 @@ sub srclist {
     my $self = shift;
     my $type = ref($_[0]) ? ${shift @_} : 'NORMAL';
     my $sbase = $self->srcbase;
-    die "Error: must specify src base before src list" if !$sbase;
+    die "$0: Error: must specify src base before src list" if !$sbase;
     for (@_) {
 	next if $_ eq $sbase;
 	if (m%^(?:[a-zA-Z]:)?$sbase[/\\]*(.+)%) {
@@ -218,17 +348,17 @@ sub srcmap {
     my %sdmap = @_;
     my $sbase = $self->srcbase;
     my $dbase = $self->dstbase;
-    die "Error: must specify src base before src map" if !$sbase;
-    die "Error: must specify dst base before src map" if !$dbase;
+    die "$0: Error: must specify src base before src map" if !$sbase;
+    die "$0: Error: must specify dst base before src map" if !$dbase;
     for (keys %sdmap) {
 	if (m%^(?:[a-zA-Z]:)?$sbase[/\\]*(.+)$%) {
 	    my $key = $1;
 	    $self->{ST_SRCMAP}->{$key}->{type} = $type;
-	    my($dst) = ($sdmap{$_} =~ m%^(?:[a-zA-Z]:)?$dbase[/\\]*(.+)$%);
+	    my($dst) = ($sdmap{$_} =~ m%^$dbase[/\\]*(.+)$%);
 	    $self->{ST_SRCMAP}->{$key}->{dst} = $dst;
 	} elsif (-e $_) {
 	    $self->{ST_SRCMAP}->{$_}->{type} = $type;
-	    if ($sdmap{$_} =~ m%^(?:[a-zA-Z]:)?$dbase[/\\]*(.+)$%) {
+	    if ($sdmap{$_} =~ m%^$dbase[/\\]*(.+)$%) {
 		$self->{ST_SRCMAP}->{$_}->{dst} = $1;
 	    } else {
 		$self->{ST_SRCMAP}->{$_}->{dst} = $sdmap{$_};
@@ -250,19 +380,23 @@ sub eltypemap {
 
 sub analyze {
     my $self = shift;
+    my $rm = shift;
     my $type = ref($_[0]) ? ${shift @_} : 'NORMAL';
     my $sbase = $self->srcbase;
     my $dbase = $self->dstbase;
-    die "Error: must specify dest base before analyzing" if !$dbase;
-    die "Error: must specify dest vob before analyzing" if !$self->dstvob;
+    die "$0: Error: must specify dest base before analyzing" if !$dbase;
+    die "$0: Error: must specify dest vob before analyzing" if !$self->dstvob;
     $self->snapdest(1) if ! -e "$dbase@@/main" && ! -e "$dbase/@@/main";
     $self->_mkbase;
     my $ct = $self->clone_ct({-autochomp=>0});
     if (-e $dbase) {
-	my @vp = grep m%^$dbase[/\\]%,
-			$ct->argv('lsp', [qw(-oth -s -inv), $dbase])->qx;
-	die "Error: view-private files exist under $dbase:\n @vp\n" if @vp;
+	my @vp = $self->_lsprivate(0);
+	my $n = @vp;
+	die "$0: Error: $n view-private files exist under $dbase:\n @vp\n"
+									if @vp;
     }
+    # Derive the add and modify lists by traversing the src map and
+    # comparing src/dst files.
     delete $self->{ST_ADD};
     delete $self->{ST_MOD};
     my $compare = $self->cmp_func;
@@ -270,7 +404,7 @@ sub analyze {
 	next if $self->{ST_SRCMAP}->{$_}->{type} &&
 		$self->{ST_SRCMAP}->{$_}->{type} !~ /$type/;
 	my $src = join('/', $sbase, $_);
-	$src = $_ if ! -e $src;
+	$src = $_ if ! -e $src && (MSWIN || ! -l $src);
 	my $dst = join('/', $dbase, $self->{ST_SRCMAP}->{$_}->{dst} || $_);
 	if (! -e $dst && ! -l $dst) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
@@ -283,7 +417,8 @@ sub analyze {
 		$update = $self->no_cmp || ($stxt ne $dtxt);
 	    } elsif (! -l $src && ! -l $dst) {
 		$update = $self->no_cmp || &$compare($src, $dst);
-		die "Error: failed comparing $src vs $dst: $!" if $update < 0;
+		die "$0: Error: failed comparing $src vs $dst: $!"
+								if $update < 0;
 	    } else {
 		$update = 1;
 	    }
@@ -293,25 +428,71 @@ sub analyze {
 	    }
 	}
     }
+    # Last, check for subtractions but only if asked - it's potentially
+    # expensive and error-prone.
+    return unless $rm;
+    my(%dirs, %files, @xfiles);
+    my $wanted = sub {
+	my $path = $File::Find::name;
+	return if $path eq $dbase;
+	if ($path =~ /lost\+found/) {
+	    $File::Find::prune = 1;
+	    return;
+	}
+	# Get a relative path from the absolute path.
+	(my $relpath = $path) =~ s%^$dbase\W?%%;
+	if (-d $path) {
+	    $dirs{$path} = 1;
+	} elsif (-f $path) {
+	    $files{$relpath} = $path;
+	}
+    };
+    find($wanted, $dbase);
+    my %dst2src;
+    for (keys %{$self->{ST_SRCMAP}}) {
+	my $dst = $self->{ST_SRCMAP}->{$_}->{dst};
+	$dst2src{$dst} = $_ if $dst;
+    }
+    for (keys %files) {
+	next if $self->{ST_SRCMAP}->{$_} && !$self->{ST_SRCMAP}->{$_}->{dst};
+	push(@xfiles, $files{$_}) if !$dst2src{$_};
+    }
+    $self->{ST_SUB}->{exfiles} = \@xfiles;
+    $self->{ST_SUB}->{dirs} = \%dirs;
 }
 
 sub preview {
     my $self = shift;
-    my $subtracting = shift;
-    my $fmt = "   %s =>\n\t%s\n";
-    print "Adding:\n" if $self->{ST_ADD};
-    for (keys %{$self->{ST_ADD}}) {
-	printf $fmt, $self->{ST_ADD}->{$_}->{src}, $self->{ST_ADD}->{$_}->{dst};
+    my $rm = shift;
+    my $indent = ' ' x 4;
+    my($adds, $mods, $subs) = (0, 0, 0);
+    if ($self->{ST_ADD}) {
+	$adds = keys %{$self->{ST_ADD}};
+	print "Adding $adds files:\n";
+	for (keys %{$self->{ST_ADD}}) {
+	    printf "$indent%s +=>\n\t%s\n", $self->{ST_ADD}->{$_}->{src},
+			 $self->{ST_ADD}->{$_}->{dst};
+	}
     }
-    print "Modifying:\n" if $self->{ST_MOD};
-    for (keys %{$self->{ST_MOD}}) {
-	printf $fmt, $self->{ST_MOD}->{$_}->{src}, $self->{ST_MOD}->{$_}->{dst};
+    if ($self->{ST_MOD}) {
+	$mods = keys %{$self->{ST_MOD}};
+	printf "Modifying $mods files:\n";
+	for (keys %{$self->{ST_MOD}}) {
+	    printf "$indent%s ==>\n\t%s\n", $self->{ST_MOD}->{$_}->{src},
+			 $self->{ST_MOD}->{$_}->{dst};
+	}
     }
-    if ($subtracting) {
-	##print "Subtracting:\n" if $self->{ST_MOD};
-	## This part is difficult and I haven't gotten to it yet ...
+    if ($rm && $self->{ST_SUB}) {
+	my @exfiles = @{$self->{ST_SUB}->{exfiles}};
+	$subs = @exfiles;
+	print "Subtracting $subs files:\n" if $subs;
+	for (@exfiles) {
+	    printf "$indent%s\n", $_;
+	}
     }
-    return keys(%{$self->{ST_ADD}}) + keys(%{$self->{ST_MOD}});
+    my $total = $adds + $mods + $subs;
+    print "File changes: add=$adds modify=$mods subtract=$subs\n";
+    return $total;
 }
 
 sub add {
@@ -324,43 +505,46 @@ sub add {
 	my $src = $self->{ST_ADD}->{$_}->{src};
 	my $dst = $self->{ST_ADD}->{$_}->{dst};
 	if (-d $src && ! -l $src) {
-	    -e $dst || mkpath($dst, 0, 0777) || die "Error: $dst: $!";
+	    -e $dst || mkpath($dst, 0, 0777) || die "$0: Error: $dst: $!";
 	} elsif (-e $src) {
 	    my $dad = dirname($dst);
-	    -d $dad || mkpath($dad, 0, 0777) || die "Error: $dad: $!";
+	    -d $dad || mkpath($dad, 0, 0777) || die "$0: Error: $dad: $!";
 	    if (-l $src) {
-		open(SLINK, ">$dst$lext") || die "Error: $dst$lext: $!";
+		open(SLINK, ">$dst$lext") || die "$0: Error: $dst$lext: $!";
 		print SLINK readlink($src), "\n";;
 		close(SLINK);
 	    } else {
-		copy($src, $dst) || die "Error: $_: $!\n";
+		copy($src, $dst) || die "$0: Error: $_: $!";
 		utime(time(), (stat $src)[9], $dst) ||
 			warn "Warning: $dst: touch failed";
 		$self->{ST_CI_FROM}->{$_} = $self->{ST_ADD}->{$_};
 	    }
+	} elsif (-l $src) {
+	    open(SLINK, ">$dst$lext") || die "$0: Error: $dst$lext: $!";
+	    print SLINK readlink($src), "\n";;
+	    close(SLINK);
 	} else {
-	    warn "Error: $src: no such file or directory\n";
+	    warn "$0: Error: $src: no such file or directory\n";
 	    $ct->fail;
 	}
     }
-    my @candidates = $ct->argv('lsp', [qw(-oth -s -inv), $mbase])->qx;
-    for (@candidates) { s%\\%/%g }
-    @candidates = sort grep m%^$mbase%, @candidates;
+    my $dv = $self->dstview;
+    my @candidates = sort $self->_lsprivate(1);
     return if !@candidates;
     # We'll be separating the elements-to-be into files and directories.
     my(%files, @symlinks, %dirs);
     # If the parent directories of any of the candidates are
     # already versioned, we'll need to check them out unless
     # it's already been done.
-    for (@candidates) {
-	my $dad = dirname($_);
-	next if ! $dad || $dirs{$dad};
-	my $lsd = $ct->argv('ls', ['-d'], $dad)->qx;
-	# No /Rule:/ means it's a view-private dir to be handled below
-	next unless $lsd =~ /\sRule:\s/;
+    my %parents = map {dirname($_) => 1} @candidates;
+    my @dads = sort keys %parents;
+    my %lsd = map {split(/\s+Rule:\s+/, $_, 2)}
+			$ct->argv('ls', [qw(-d -nxn -vis -vob)], @dads)->qx;
+    for my $dad (keys %lsd) {
 	# If already checked out, nothing to do.
-	next if $lsd =~ /CHECKEDOUT$/;
-	# Now we know it's an element and needs to be checked out.
+	next if ! $lsd{$dad} || $lsd{$dad} =~ /CHECKEDOUT$/;
+	# Now we know it's an element which needs to be checked out.
+	$dad =~ s%\\%/%g if MSWIN;
 	$dirs{$dad}++;
     }
     $ct->argv('co', $self->comment, keys %dirs)->system if keys %dirs;
@@ -381,26 +565,27 @@ sub add {
 	# back into the new dir (still as view-private files).
 	my $tmpdir = "$cand.$$.keep.d";
 	if (!rename($cand, $tmpdir)) {
-	    warn "Error: $cand: $!\n";
+	    warn "$0: Error: $cand: $!\n";
 	    $ct->fail;
 	    next;
 	}
 	if ($mkdir->args($cand)->system) {
-	    rename($tmpdir, $cand);
+	    warn "Warning: unable to rename $tmpdir back to $cand!"
+						unless rename($tmpdir, $cand);
 	    $ct->fail;
 	    next;
 	}
 	if (!opendir(DIR, $tmpdir)) {
-	    warn "Error: $tmpdir: $!";
+	    warn "$0: Error: $tmpdir: $!";
 	    $ct->fail;
 	    next;
 	}
 	while (defined(my $i = readdir(DIR))) {
 	    next if $i eq '.' || $i eq '..';
-	    rename("$tmpdir/$i", "$cand/$i") || die "Error: $cand/$i: $!";
+	    rename("$tmpdir/$i", "$cand/$i") || die "$0: Error: $cand/$i: $!";
 	}
 	closedir DIR;
-	rmdir $tmpdir || warn "Error: $tmpdir: $!";
+	rmdir $tmpdir || warn "$0: Error: $tmpdir: $!";
     }
 
     # Optionally, reconstitute an old element of the same name if present.
@@ -466,7 +651,7 @@ sub modify {
 	    my $src = $self->{ST_MOD}->{$_}->{src};
 	    my $dst = $self->{ST_MOD}->{$_}->{dst};
 	    if (!copy($src, $dst)) {
-		warn "Error: $dst: $!\n";
+		warn "$0: Error: $dst: $!\n";
 		$co->fail;
 		next;
 	    }
@@ -475,9 +660,7 @@ sub modify {
 	}
     }
     if (@symlinks) {
-	my $dbase = $self->dstbase;
-	my %checkedout = map {$_ => 1}
-		    $self->ct->argv('lsco', [qw(-s -cvi -a)], $dbase)->qx;
+	my %checkedout = map {$_ => 1} $self->_lsco;
 	my $ln = $co->clone->prog('ln');
 	$ln->opts('-s', $ln->opts);
 	my $rm = $co->clone->prog('rmname');
@@ -496,42 +679,17 @@ sub modify {
 
 sub subtract {
     my $self = shift;
-    my $dbase = $self->dstbase;
+    return unless $self->{ST_SUB};
     my $ct = $self->clone_ct;
-    my %checkedout = map {$_ => 1}
-		    $ct->argv('lsco', [qw(-s -cvi -a)], $dbase)->qx;
-    my(%dirs, %files, @exfiles, @exdirs);
-    my $wanted = sub {
-	my $path = $File::Find::name;
-	return if $path eq $dbase;
-	if ($path =~ /lost\+found/) {
-	    $File::Find::prune = 1;
-	    return;
-	}
-	# Get a relative path from the absolute path.
-	(my $relpath = $path) =~ s%^$dbase\W?%%;
-	if (-d $path) {
-	    $dirs{$path} = 1;
-	} elsif (-f $path) {
-	    $files{$relpath} = $path;
-	}
-    };
-    find($wanted, $dbase);
-
-    my %dst2src;
-    for (keys %{$self->{ST_SRCMAP}}) {
-	my $dst = $self->{ST_SRCMAP}->{$_}->{dst};
-	$dst2src{$dst} = $_ if $dst;
-    }
-    for (keys %files) {
-	next if $self->{ST_SRCMAP}->{$_} && !$self->{ST_SRCMAP}->{$_}->{dst};
-	push(@exfiles, $files{$_}) if !$dst2src{$_};
-    }
+    my %checkedout = map {$_ => 1} $self->_lsco;
+    my @exfiles = @{$self->{ST_SUB}->{exfiles}};
+    my %dirs = %{$self->{ST_SUB}->{dirs}};
     my $r_cmnt = $self->comment;
     for my $dad (map {dirname($_)} @exfiles) {
 	$ct->argv('co', $r_cmnt, $dad)->system if !$checkedout{$dad}++;
     }
     $ct->argv('rm', $r_cmnt, @exfiles)->system if @exfiles;
+    my @exdirs;
     while (1) {
 	for (sort {$b cmp $a} keys %dirs) {
 	    if (opendir(DIR, $_)) {
@@ -571,7 +729,7 @@ sub label {
     }
     $ctq->mklabel([qw(-rep -rec -nc), $lbtype], $dbase)->system;
     # Last, label the ancestors of the destination back to the vob tag.
-    my $dvob = $self->dstvob;
+    my $dvob = $self->normalize($self->dstvob);
     my($dad, @ancestors);
     for ($dad = dirname($dbase);
 		    length($dad) >= length($dvob); $dad = dirname($dad)) {
@@ -599,18 +757,18 @@ sub checkin {
     # Do one-by-one ci's with -from (to preserve CR's) unless
     # otherwise requested.
     if (! $self->no_cr) {
-	$ct->argv('ci', [@ptime, qw(-nc -ide -rm -from)]);
 	for (keys %{$self->{ST_CI_FROM}}) {
 	    my $src = $self->{ST_CI_FROM}->{$_}->{src};
 	    my $dst = $self->{ST_CI_FROM}->{$_}->{dst};
-	    $ct->args($src, $dst)->system;
+	    $ct->ci([@ptime, qw(-nc -ide -rm -from), $src], $dst)->system;
 	}
     }
     # Check in anything not handled above.
-    my %allco = map {$_ => 1} $ct->argv('lsco', [qw(-s -cvi -a)], $mbase)->qx;
-    my @co = grep m%^$mbase%, keys %allco;
-    unshift(@co, $dad) if $allco{$dad} || $allco{"$dad/."};
-    $ct->argv('ci', [qw(-nc -ide), @ptime], sort @co)->system if @co;
+    my %checkedout = map {$_ => 1} $self->_lsco;
+    my $dv = $self->dstview;
+    my @todo = grep {m%^$mbase%} keys %checkedout;
+    unshift(@todo, $dad) if $checkedout{$dad};
+    $ct->argv('ci', [qw(-nc -ide), @ptime], sort @todo)->system if @todo;
     # Fix the protections of the target files if requested.
     if ($self->protect) {
 	my %perms;
@@ -651,19 +809,19 @@ sub cleanup {
     my $mbase = $self->_mkbase;
     my $dad = dirname($mbase);
     my $ct = $self->clone_ct({-autofail=>0});
-    my @vp = grep m%^$mbase%,
-			$ct->argv('lsp', [qw(-oth -s -inv), $mbase])->qx;
+    my @vp = $self->_lsprivate(1);
     for (sort {$b cmp $a} @vp) {
 	if (-d $_) {
-	    rmdir $_ || warn "Error: unable to remove $_\n";
+	    rmdir $_ || warn "$0: Error: unable to remove $_\n";
 	} else {
-	    unlink $_ || warn "Error: unable to remove $_\n";
+	    unlink $_ || warn "$0: Error: unable to remove $_\n";
 	}
     }
-    my %allco = map {$_ => 1} $ct->argv('lsco', [qw(-s -cvi -a)], $mbase)->qx;
-    my @co = grep m%^$mbase%, keys %allco;
-    unshift(@co, $dad) if $allco{$dad} || $allco{"$dad/."};
-    $ct->argv('unco', [qw(-rm)], sort {$b cmp $a} @co)->system if @co;
+    my %checkedout = map {$_ => 1} $self->_lsco;
+    my $dv = $self->dstview;
+    my @todo = grep {m%^$mbase%} keys %checkedout;
+    unshift(@todo, $dad) if $checkedout{$dad};
+    $ct->argv('unco', [qw(-rm)], sort {$b cmp $a} @todo)->system if @todo;
 }
 
 # Undo current work and exit. May be called from an exception handler.
@@ -673,6 +831,11 @@ sub fail {
     $self->ct->autofail(0);	# avoid exception-handler loop
     $self->cleanup;
     exit defined($rc) ? $rc : 2;
+}
+
+sub version {
+    my $self = shift;
+    return $ClearCase::SyncTree::VERSION;
 }
 
 1;
@@ -830,11 +993,12 @@ via the I<err_handler> method (see).
 =item * -E<gt>err_handler
 
 Registers an exception handler to be called upon failure of any
-cleartool command. Call with 0 to have no handler Pass it a code ref
-to register a function, with an object and method I<name> to
-register a method. Examples:
+cleartool command. Call with 0 to have no handler. Pass it a code ref
+to register a function, with an object and method I<name> to register a
+method, with a scalar ref to count errors. Examples:
 
     $obj->err_handler(0);		# ignore cleartool errors
+    $obj->err_handler(\$rc);		# count errors in $rc
     $obj->err_handler(\&func);		# register func() for errors
     $obj->err_handler($self, 'method');	# register $obj->method
 
@@ -911,17 +1075,20 @@ corner case I haven't gotten to).
 
 =item *
 
+SyncTree does not transport empty directories, and added/removed
+directories aren't shown explicitly in the list of operations to be
+performed. This is a structural artifact/flaw.
+
+=item *
+
 If a file is removed via the -E<gt>subtract method and later added back
 via -E<gt>add, the result will be a new element (aka I<evil twin>).
-SyncTree does not have the smarts to find the old element of the same
-name and relink to it. This could be handled but I haven't yet needed
-it.
+The -E<gt>reuse method (see) may be used to prevent evil twins.
 
 =item *
 
 I have not tested SyncTree in snapshot views and would not expect it to
-work out of the box, though the fixes would be largely mechanical.  At
-the least, though, expect it to be slower in a snapshot view.
+work out of the box, though I did try to code for the possibility.
 
 =back
 
@@ -931,15 +1098,15 @@ Based on code originally written by Paul D. Smith
 <pausmith@nortelnetworks.com>.  Paul's version was based on the Bourne
 shell script 'citree' delivered as sample code with ClearCase.
 
-Rewritten for Unix/Win32 portability by David Boyce <dsb@world.std.com>
+Rewritten for Unix/Win32 portability by David Boyce <dsb@boyski.com>
 in 8/1999, then reorganized into a module in 1/2000. This module no
-longer bears the slightest resemblance to citree.
+longer bears the slightest resemblance to any version of citree.
 
 =head1 COPYRIGHT
 
 Copyright 1997,1998 Paul D. Smith and Bay Networks, Inc.
 
-Copyright 1999,2000 David Boyce (dsb@world.std.com).
+Copyright 1999-2001 David Boyce (dsb@boyski.com).
 
 This script is distributed under the terms of the GNU General Public License.
 You can get a copy via ftp://ftp.gnu.org/pub/gnu/ or its many mirrors.
@@ -948,8 +1115,8 @@ warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 =head1 STATUS
 
-This is currently ALPHA code and thus I reserve the right to change the
-API incompatibly. At some point I'll bump the version suitably and
+SyncTree is currently ALPHA code and thus I reserve the right to change
+the API incompatibly. At some point I'll bump the version suitably and
 remove this warning, which will constitute an (almost) ironclad promise
 to leave the interface alone.
 

@@ -58,5 +58,26 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Fixed bug in synctree: clearprompt result must be >>8.
 
 0.21 Fri Jun 29 19:32:28 EDT 2001
-	- Fixes donated from fmr.com. Not tested on Windows (no
-	  Windows/CC place to test right now).
+	- A few fixes donated from fmr.com.
+
+0.23 Tue Sep  4 10:48:58 EDT 2001
+	= Test Env: Solaris 8/Win2K SP2/Perl 5.6/CC 4.2
+	+ Summary: previous versions had some pretty serious bugs
+	  on Windows especially. These are fixed and it appears
+	  to work pretty robustly on UNIX and Windows.
+	- Fixes to support M:\view\... paths on *&^&%^#$ Windows
+	- Added --Version flag to synctree.
+	- Fix bug reported by Paul Faulstich of llbean.com.
+	- Removed requirement for 'dbase' dir to exist a priori.
+	- Only look for subtractions if requested (for performance).
+	- Add support for subtraction preview.
+	- Added -follow feature for alignment with clearfsimport.
+	- Some peformance enhancements by combining repetitive
+	  cleartool commands into one.
+	- No longer requires a set view on UNIX as long as the
+	  dest dir is in a view context.
+	- Added a -quiet flag to synctree (requires Argv 1.00).
+	- Improved -force to return an exit status.
+	- Fixed synctree to return nonzero if any checkin fails.
+	- Bugfix: transport non-resolving (dangling) symlinks correctly.
+	- Require Argv 1.00 or above (related bugfixes there).

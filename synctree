@@ -1,9 +1,11 @@
 #!/usr/local/bin/perl
 
-use ClearCase::Argv 0.23;
-use ClearCase::SyncTree 0.19;
+use Benchmark;
+use ClearCase::Argv 1.00;
+use ClearCase::SyncTree 0.23;
 use File::Basename;
 use File::Find;
+use File::Path;
 use File::Spec 0.82;
 use Getopt::Long;
 
@@ -12,11 +14,12 @@ use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i;
 require 5.005 if MSWIN;
 
 my $prog = basename($0, qw(.pl));
+my $rc = 0;
 
 sub usage {
     my $msg = shift;
-    my $rc = (defined($msg) && !$msg) ? 0 : 2;
-    if ($rc) {
+    my $retcode = (defined($msg) && !$msg) ? 0 : 2;
+    if ($retcode) {
 	select STDERR;
 	print "$prog: Error: $msg\n\n" if $msg;
     }
@@ -24,23 +27,26 @@ sub usage {
 Usage: $prog [flags] -sbase <dir> -dbase <vob-dir> [pname...]
 Flags:
    -help		Print this message and exit
-   -dbase <vob-dir>	The destination base directory
    -sbase <dir>		The source base directory
-   -flist <file>	A file containing a list of files or "-" for stdin
+   -dbase <vob-dir>	The destination base directory
+   -flist <file>	A file containing a list of src files, or "-" for stdin
    -map			Interpret \@ARGV as a hash mapping src => dest
+   -follow		Follow symlinks when traversing <pname> directories
    -force		Continue despite errors
    -ci			Check in changes (default is to leave co'ed)
-   -cr			Check in in such a way as to preserve CR's (slower)
+   -cr			Check in so as to preserve CR's (slower)
    -ctime		Checked in files get current time (no -ptime)
-   -rmname		Remove files in dest area that aren't in src
+   -rmname		Remove files from dest area that aren't in src
    -label <lbtype>	Apply the specified label when done
    -c <comment>		Use specified comment for checkins
-   -n			Exit after showing a preview.
-   -yes			Perform all work without asking first
-   -testdrive		Do the work, then unco it all and exit
-   -nprotect		Turn off "cleartool protect -chmod" stage
+   -no			Exit after showing a preview
+   -yes			Perform all work without prompts
+   -nprotect		Turn off "cleartool protect -chmod" phase
    -reuse		Attempt to reuse existing elements of same name
+   -summary 		Print a summary of cleartool activities at end
+   -verbose <n>		Set to 0 for least verbosity, 2 for most (default=1)
    -Narrow [!]<re>	Limit files found to those which match /re/
+   -Version		Print the current $prog version and quit
    -/dbg=1		Verbose mode: show cleartool cmds as they run
 Notes:
     All flags may be abbreviated to their shortest unique name.
@@ -50,11 +56,10 @@ Examples:
     $prog -sb /tmp/newcode -db /vobs_tps/foo -N '\.java\$' /tmp/newcode
     $prog -sb /tmp/newcode -db /vobs_tps/foo -N '!\.old\$' /tmp/newcode
 EOF
-    exit $rc;
+    exit $retcode;
 }
 
-my %transfer;
-my %opt;
+my(%opt, %xfer);
 
 {
     my($only, $skip);
@@ -68,7 +73,7 @@ my %opt;
 	    return if $skip && $path =~ /$skip/;
 	}
 	if (-f $_ || -l $_) {
-	    $transfer{$path} = $path;
+	    $xfer{$path} = $path;
 	} elsif (-d _) {
 	    if ($_ eq 'lost+found') {
 		$File::Find::prune = 1;
@@ -95,18 +100,56 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label|mklabel=s map
 		     Narrow=s@
-		     Add Modify Rm
-		     ci cr ctime force rmname
-		     help preview|n ok yes testdrive
+		     Add Modify
+		     ci cr ctime follow force rmname
+		     help no ok quiet yes
+		     summary verbose=i Version
 )) || exit 1;
 usage() if $opt{help};
+if ($opt{Version}) {
+    print ClearCase::SyncTree->version, "\n";
+    exit 0;
+}
 usage("-sbase is a required flag") if !$opt{sbase};
 usage("-dbase is a required flag") if !$opt{dbase};
-for (@opt{qw(dbase sbase)}) {
-    die "$prog: Error: no such directory $_\n" unless -d;
-    $_ = File::Spec->rel2abs($_);
-    s%\\%/%g if MSWIN;
+
+# Implement the -summary functionality.
+if ($opt{summary}) {
+    my $start = new Benchmark;
+    ClearCase::Argv->summary;	# start keeping stats
+    END {
+	if ($start && $opt{summary}) {
+	    # print out the stats we kept
+	    print STDERR ClearCase::Argv->summary;
+	    # show timing data
+	    my $timing = timestr(timediff(new Benchmark, $start));
+	    print "Elapsed time: $timing\n";
+	}
+    }
 }
+
+if (!exists($opt{verbose}) || $opt{verbose} == 1) {
+    # do nothing
+} elsif ($opt{verbose} == 0) {
+    ClearCase::Argv->quiet(1);
+} else {
+    ClearCase::Argv->dbglevel(1);
+}
+
+# Create the object we'll be working with.
+my $sync = ClearCase::SyncTree->new;
+
+# The dest base must be normalized right away so we can work with it.
+# This means conversion to an absolute, view-extended, pathname.
+$opt{dbase} = $sync->dstbase($opt{dbase});
+
+# Normalize src dir path too.
+die "$prog: Error: no such directory $opt{sbase}\n" unless -d $opt{sbase};
+$opt{sbase} = File::Spec->rel2abs($opt{sbase});
+$opt{sbase} =~ s%\\%/%g if MSWIN;
+
+# Suppress blathering on stdout from cleartool if asked.
+ClearCase::Argv->quiet(1) if $opt{quiet};
 
 if ($opt{flist}) {
     usage("-flist and -map are mutually exclusive") if $opt{map};
@@ -123,7 +166,10 @@ if ($opt{flist}) {
 			     if $to && ! File::Spec->file_name_is_absolute($to);
 	next if -d $from;
 	die "$prog: Error: $from: No such file or directory\n" unless -e $from;
-	$transfer{$from} = $to || $from;
+	if (MSWIN) {
+	    for ($from, $to) { s%\\%/%g }
+	}
+	$xfer{$from} = $to || $from;
     }
     close(FLIST);
 }
@@ -134,53 +180,56 @@ if ($opt{map}) {
 	$to ||= shift;
 	die "$prog: Error: odd number of files specified with -map\n" if !$to;
 	next if -d $from;
-	$transfer{$from} = $to;
+	$xfer{$from} = $to;
     }
 } else {
-    push(@ARGV, $opt{sbase}) if !@ARGV && !%transfer;
+    push(@ARGV, $opt{sbase}) if !@ARGV && !%xfer;
     # Convert warnings from within find() into fatal errors.
     local $SIG{__WARN__} = sub { die "$prog: Error: @_" };
+    my %find_cfg;
+    $find_cfg{wanted} = \&wanted;
+    $find_cfg{follow_fast}++ if $opt{follow};
     for my $pname (@ARGV) {
-	find(\&wanted, $pname);
+	find(\%find_cfg, $pname);
     }
 }
 
 #########################################################################
-# At this point we've parsed the cmd line, derived the file list,
-# etc. and are set to do the real work.
+# At this point we've parsed the cmd line, derived the file list, etc.
+# and are set to do some real work. First, set some options in the object.
 #########################################################################
 
-# Create a 'synctree' object.
-my $sync = ClearCase::SyncTree->new;
 # Allow the protect default to be overridden.
 $sync->protect(0) if $opt{nprotect};
 # Attempt element reconstitution.
 $sync->reuse(1) if $opt{reuse};
 # Turn off the default exception handler if -force.
-$sync->err_handler(0) if $opt{force};
+$sync->err_handler(\$rc) if $opt{force};
 # Specify the comment to attach to any changes.
-$sync->comment($opt{comment} || $opt{comment} || "By:$0");
+if (!$opt{comment}) {
+    ($opt{comment} = "By:$0") =~ s%\\%/%g;
+}
+$sync->comment($opt{comment});
 # Suppress -ptime flag on checkins if requested.
 $sync->ctime(1) if $opt{ctime};
-# Tell it where the files are coming from ...
+# Tell it where the files are coming from. We already said where they're
+# going (->dstbase) above.
 $sync->srcbase($opt{sbase});
-# Tell it where they're going to ...
-$sync->dstbase($opt{dbase});
 # Supply the list of required files.
-$sync->srcmap(%transfer);
+$sync->srcmap(%xfer);
+
+#########################################################################
+# Now, the object knows what it needs to do. Begin the 'action' methods
+# which tell it to start doing things.
+#########################################################################
+
 # Compare src and dest lists and figure out what to do.
-$sync->analyze;
-# If -preview, give a preview and exit. Ask for OK to proceed unless -yes.
-if (!$opt{yes} || $opt{preview}) {
+$sync->analyze($opt{rmname});
+# If -no, give a preview and exit. Ask for OK to proceed unless -yes.
+if (!$opt{yes} || $opt{no}) {
     my $changes = $sync->preview($opt{rmname});
-    if (!$changes) {
-	if ($opt{rmname}) {
-	    warn "Warning: -rmname behavior cannot be predicted ...\n";
-	} else {
-	    exit 0;
-	}
-    }
-    exit 0 if $opt{preview};
+    exit 0 unless $changes;
+    exit 0 if $opt{no};
     my $msg = "Continue with these $changes file changes?";
     $msg = qq("$msg") if MSWIN;
     exit 0 if system(qw(clearprompt proceed -pro), $msg);
@@ -193,26 +242,29 @@ $sync->modify unless $opt{Modify};
 $sync->subtract if $opt{rmname};
 # Optionally label the above work, including any still-checked-out files.
 $sync->label($opt{lbtype}) if $opt{lbtype};
-# Undo all work and exit if we're just going for a test drive.
-$sync->fail(0) if $opt{testdrive};
 ## Workaround for a CC problem - xml files may have binary data.
 ## But in CC 4.1 there's a new "xml" eltype that *should* fix it.
 ## $sync->eltypemap('\.xml$' => 'compressed_file');
-# Get rid of any exception handler before starting the checkin
-# process, as once a checkin succeeds there's no going back.
-$sync->err_handler(0);
 # Prompt the user before checkin if -yes not in use.
 if (!$opt{yes} && !$opt{ci}) {
-    my $msg = "Check in all changes ('abort' to unco)?";
+    my $b = MSWIN ? 'Cancel' : 'Abort';
+    my $msg = "Check in all changes? (No to leave checked out, $b to unco all)";
     $msg = qq("$msg") if MSWIN;
     my $resp = system(qw(clearprompt yes_no -pro), $msg) >> 8;
     $sync->fail if $resp > 1;
     $opt{ci} = !$resp;
 }
+
+# Get rid of the exception handler before starting the checkin
+# process, as once a checkin succeeds there's no going back.
+# Instead, count subsequent errors in a scalar.
+$sync->err_handler(\$rc);
 # Now check in the changes: one at a time if -cr, otherwise
 # all at once.
 $sync->no_cr unless $opt{cr};
 $sync->checkin if $opt{ci} || $opt{cr} || $opt{yes};
+
+exit $rc;
 
 __END__
 
@@ -278,10 +330,10 @@ Symbolic links are supported, even on Windows.  Note that the text of
 the link is transported I<verbatim> from source area to dest area; thus
 relative symlinks may no longer resolve in the destination.
 
-Consider using the I<-n> or I<-testdrive> flags the first time you use
-this on a valued VOB, even though nothing irreversible is done (e.g.
-no I<rmelem>, I<rmbranch>, I<rmver>, I<rmtype>, etc.).  And by the same
-token use I<-ci> and I<-yes> with care.
+Consider using the I<-n> flag the first time you use this on a valued
+VOB, even though nothing irreversible is done (e.g.  no I<rmelem>,
+I<rmbranch>, I<rmver>, I<rmtype>, etc.).  And by the same token use
+I<-ci> and I<-yes> with care.
 
 =head1 FILE MAPPING
 
@@ -346,17 +398,39 @@ interface only.
 
 =item *
 
-Synctree has experimental support for I<element retention>. I.e. if an
-element is added in one pass and removed (rmnamed) in a subsequent
-pass, and if a third pass would make another element of the same name,
-synctree can optionally (I<-reuse>) make a link to the existing file
-instead of making a new element that may be considered an "evil twin".
+Synctree has support for I<element retention>. I.e. if an element is
+added in one pass and removed (rmnamed) in a subsequent pass, and if a
+third pass would make another element of the same name, synctree can
+optionally (I<-reuse>) make a link to the existing file instead of
+making a new element that may be considered an "evil twin".
 
 =back
 
 However, unless one of the above applies the supported, integrated
 solution (B<clearfsimport>) is generally preferable. And of course all
 of these features I<may> eventually be supported by clearfsimport.
+
+=head1 BUGS
+
+=over 4
+
+=item *
+
+Subtraction of symlinks is currently unimplemented (it's just a little
+corner case I haven't gotten to).
+
+=item *
+
+SyncTree does not transport empty directories, and added/removed
+directories aren't shown explicitly in the list of operations to be
+performed. This is a structural artifact/flaw.
+
+=item *
+
+I have not tested SyncTree in snapshot views and would not expect it to
+work out of the box, though I did try to code for the possibility.
+
+=back
 
 =head1 DEBUGGING
 
@@ -366,11 +440,11 @@ the Argv module on which I<synctree> is built).
 
 =head1 AUTHOR
 
-David Boyce <dsb@world.std.com>
+David Boyce <dsb@boyski.com>
 
 =head1 COPYRIGHT
 
-Copyright (c) 2000 David Boyce. All rights reserved.  This Perl
+Copyright (c) 2000,2001 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute and/or modify it under
 the same terms as Perl itself.
 
