@@ -86,3 +86,6 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Fixed an obscure bug involving -reuse and -cr together.
 	- Some improvements to -map/-flist and docs thereof
 	- Added -lbmods flag to synctree.
+
+0.25 Tue Sep 18 09:34:34 EDT 2001
+	- Added -stop option to synctree.

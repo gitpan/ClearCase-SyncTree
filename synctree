@@ -33,6 +33,7 @@ Flags:
    -map			Interpret \@ARGV as a hash mapping src => dest
    -follow		Follow symlinks when traversing <pname> directories
    -force		Continue despite errors
+   -stop		Stop at the first error (no cleanup)
    -ci			Check in changes (default is to leave co'ed)
    -cr			Check in so as to preserve CR's (slower)
    -ctime		Checked in files get current time (no -ptime)
@@ -44,7 +45,7 @@ Flags:
    -yes			Perform all work without prompts
    -nprotect		Turn off "cleartool protect -chmod" phase
    -reuse		Attempt to reuse existing elements of same name
-   -summary 		Print a summary of cleartool activities at end
+   -summary 		Print a summary of cleartool activities when done
    -verbose <n>		Set to 0 for least verbosity, 2 for most (default=1)
    -Narrow [!]<re>	Limit files found to those which match /re/
    -Version		Print the current $prog version and quit
@@ -105,8 +106,7 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s label|mklabel=s lbmods map
 		     Narrow=s@
-		     Add Modify
-		     ci cr ctime follow force reuse rmname
+		     ci cr ctime follow force reuse rmname stop
 		     help no ok quiet yes
 		     summary verbose=i Version
 )) || exit 1;
@@ -117,6 +117,8 @@ if ($opt{Version}) {
 }
 usage("-sbase is a required flag") if !$opt{sbase};
 usage("-dbase is a required flag") if !$opt{dbase};
+usage("-force and -stop are mutually exclusive") if $opt{force} && $opt{stop};
+usage("-yes and -no are mutually exclusive") if $opt{yes} && $opt{no};
 
 # Implement the -summary functionality.
 if ($opt{summary}) {
@@ -157,7 +159,8 @@ $opt{sbase} =~ s%\\%/%g if MSWIN;
 ClearCase::Argv->quiet(1) if $opt{quiet};
 
 if ($opt{flist}) {
-    usage("-flist and -map are mutually exclusive") if $opt{map};
+    #usage("-flist and -map are mutually exclusive") if $opt{map};
+    usage("-flist and -Narrow are mutually exclusive") if $opt{Narrow};
     open(FLIST, $opt{flist}) || die "$prog: Error: $opt{flist}: $!";
     while(<FLIST>) {
 	chomp;
@@ -220,7 +223,11 @@ $sync->protect(0) if $opt{nprotect};
 # Attempt element reconstitution.
 $sync->reuse(1) if $opt{reuse};
 # Turn off the default exception handler if -force.
-$sync->err_handler(\$rc) if $opt{force};
+if ($opt{force}) {
+    $sync->err_handler(\$rc);
+} elsif ($opt{stop}) {
+    $sync->err_handler(sub {exit 2});
+}
 # Specify the comment to attach to any changes.
 if (!$opt{comment}) {
     ($opt{comment} = "By:$0") =~ s%\\%/%g;
@@ -251,9 +258,9 @@ if (!$opt{yes} || $opt{no}) {
     exit 0 if system(qw(clearprompt proceed -pro), $msg);
 }
 # Create new elements in the target area.
-$sync->add unless $opt{Add};
+$sync->add;
 # Update existing files which differ between src and dest.
-$sync->modify unless $opt{Modify};
+$sync->modify;
 # Remove any files from dest that aren't in src, if requested.
 $sync->subtract if $opt{rmname};
 # Optionally label the above work, including any still-checked-out files.
@@ -293,14 +300,11 @@ synctree - Normalize a tree of files with a tree of ClearCase elements
 
 =head1 SYNOPSIS
 
-Run this script with the C<-help> option for usage details. Here are
-some additional sample usages with explanations:
-
-  synctree -ci -sbase /tmp/newcode -dbase /vobs_tps/xxx /tmp/newcode/xxx
+  synctree -sbase /tmp/newcode -dbase /vobs_tps/xxx
 
 Take all files located under /tmp/newcode/xxx, remove the leading
 "/tmp/newcode", from each of their pathnames, and place the remaining
-relative paths under "/vobs_tps/xxx". Check in when done.
+relative paths under "/vobs_tps/xxx".
 
   synctree -cr -yes -sbase /vobs/hpux/bin -dbase /vobs_rel/hpux/bin
 
@@ -357,6 +361,77 @@ Consider using the I<-n> flag the first time you use this on a valued
 VOB, even though nothing irreversible is done (e.g.  no I<rmelem>,
 I<rmbranch>, I<rmver>, I<rmtype>, etc.).  And by the same token use
 I<-ci> and I<-yes> with care.
+
+=head1 OPTIONS
+
+Not all options are described here, only those requiring elaboration
+beyond the C<-help> summary. Run C<synctree -help> for a full option
+summary.
+
+=over 4
+
+=item * I<-force, -stop>
+
+By default, upon encountering a ClearCase error synctree will attempt
+to return to the initial state by undoing all checkouts etc. The
+I<-stop> flag will cause it to exit immediately leaving the current
+state intact, while I<-force> will cause it to blunder onward ignoring
+errors. However, even with I<-force> a nonzero status is returned if
+errors are encountered.
+
+=item * I<-no, -yes, -ci>
+
+The I<-no> flag causes synctree to report what it would do and exit
+without making any changes, I<-yes> suppresses all prompts, and I<-ci>
+makes it check in all changes without asking.
+
+=item * I<-label, -lbmods>
+
+The I<-label> option let you specify a label to be applied before
+finishing. By default it will label recursively from the I<-dbase> area
+down, as well as all parent directories upward to the vob root.
+If the I<-lbmods> flag is used in conjunction, only modified elements
+will be labeled.
+
+=item * I<-reuse>
+
+If element X is created in synctree run #1, rmname'd in run #2, and 
+created again in run #3, you may end up with multiple elements with
+the same name. This situation is known as an I<evil twin>. The
+I<-reuse> flag can avoid this; before making a new element it
+searches the directory's version tree looking for a prior element
+of the same name. If found, it will line the old element back into
+the current version of the directory, then (if the contents differ)
+check it out and replace the contents with those of the source
+file.
+
+This flag can avoid evil twins and save storage space but will run a
+little slower due to the extra analysis. Also, there's no guarantee the
+prior element of the same name is in fact logically related to the new
+one. They could conceivably even be of different element types.
+
+=item * I<-Narrow>
+
+The I<-Narrow> flag allows a regular expression to limit the files
+from the source list which are compared with the destination base.
+I.e. if you want to transport all the C<*.class> files from a
+dir tree without the source files you can use
+
+    synctree -N '\.class\$' ...
+
+Note that the argument is a Perl regular expression, not a file glob.
+Any legal Perl RE may be used. Also, multiple I<-Narrow> flags may be
+used; thus, to collect C<*.class> and C<*.properties> files you may use
+either of:
+
+    synctree -N '\.class\$' -N '\.properties\$' ...
+    synctree -N '\.(class|properties)\$' ...
+
+Also, the I<-Narrow> flag is considered only for file lists derived
+internally by synctree. If you provide your own file list using
+I<-flist>, filtering it is your own responsibility.
+
+=back
 
 =head1 FILE MAPPING
 

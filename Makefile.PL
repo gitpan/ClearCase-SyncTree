@@ -5,8 +5,8 @@ WriteMakefile(
     'VERSION_FROM'	=> 'SyncTree.pm',
     'EXE_FILES'		=> [ 'synctree' ],
     'PREREQ_PM'		=> {
-	Argv		=> 0.53,
-	ClearCase::Argv	=> 0.23,
+	Argv		=> 1.00,
+	ClearCase::Argv	=> 1.00,
 	File::Spec	=> 0.82,
     },
     'dist'		=> {
