@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.17';
+$VERSION = '0.18';
 
 require 5.004;
 
@@ -137,6 +137,7 @@ sub _mkbase {
 	my $mbase = $self->dstbase;
 	my $dvob = $self->dstvob;
 	my $ct = $self->clone_ct({-stdout=>0, -stderr=>0});
+	$ct->autofail(0);
 	while (1) {
 	    last if length($mbase) <= length($dvob);
 	    last if -d $mbase &&
@@ -245,7 +246,7 @@ sub analyze {
     $self->_mkbase;
     my $ct = $self->clone_ct({-autochomp=>0});
     if (-e $dbase) {
-	my @vp = grep m%^$dbase%,
+	my @vp = grep m%^$dbase[/\\]%,
 			$ct->argv('lsp', [qw(-oth -s -inv), $dbase])->qx;
 	die "Error: view-private files exist under $dbase:\n @vp\n" if @vp;
     }
@@ -852,8 +853,22 @@ overridden at creation time. Example:
 
 =head1 BUGS
 
+=over 4
+
+=item *
+
 Subtraction of symlinks is currently unimplemented (it's just a little
 corner case I haven't gotten to).
+
+=item *
+
+If a file is removed via the -E<gt>subtract method and later added back
+via -E<gt>add, the result will be a new element (aka I<evil twin>).
+SyncTree does not have the smarts to find the old element of the same
+name and relink to it. This could be handled but I haven't yet needed
+it.
+
+=back
 
 =head1 AUTHOR
 

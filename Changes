@@ -42,3 +42,7 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.17 Tue Oct 24 22:13:45 EDT 2000
 	- Added -map and -nprotect flags to synctree script.
+
+0.18 Wed Nov  1 21:44:31 EST 2000
+	- Fixed a pretty bad bug causing failures to remove view-private
+	  files it didn't create.

@@ -34,7 +34,7 @@ Flags:
    -ci			Check in changes (default is to leave co'ed)
    -cr			Check in in such a way as to preserve CR's (slower)
    -ctime		Checked in files get current time (no -ptime)
-   -rm			Remove files in dest area that aren't in src
+   -rmname		Remove files in dest area that aren't in src
    -label <lbtype>	Apply the specified label when done
    -c <comment>		Use specified comment for checkins
    -n			Exit after showing a preview.
@@ -43,8 +43,9 @@ Flags:
    -nprotect		Turn off "cleartool protect -chmod" stage
    -Narrow [!]<re>	Limit files found to those which match /re/
    -/dbg=1		Verbose mode: show cleartool cmds as they run
-Note:
+Notes:
     All flags may be abbreviated to their shortest unique name.
+    Run "perldoc synctree" for detailed documentation and examples.
 Examples:
     $prog -sbase /tmp/newcode -dbase /vobs_tps/foo /tmp/newcode
     $prog -sb /tmp/newcode -db /vobs_tps/foo -N '\.java\$' /tmp/newcode
@@ -93,10 +94,11 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
     local $Getopt::Long::passthrough = 1;
     GetOptions(\%opt, qw(comment|c=s nprotect)) || exit 1;
 }
-GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s map
+GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label|mklabel=s map
 		     Narrow=s@
 		     Add Modify Rm
-		     help ci cr ctime force preview|n ok rm testdrive yes
+		     ci cr ctime force rmname
+		     help preview|n ok yes testdrive
 )) || exit 1;
 usage() if $opt{help};
 usage("-sbase is a required flag") if !$opt{sbase};
@@ -114,8 +116,10 @@ if ($opt{flist}) {
 	chomp;
 	s/^\s+//;
 	s/\s+$//;
-	my($from, $to) = split /\s*=>\s*/;
+	next if ! $_ || /^#/;
+	my($from, $to) = split /\s*=[=>]\s*/;
 	next if -d $from;
+	die "$prog: Error: $_: No such file or directory\n" unless -e;
 	$transfer{$from} = $to || $from;
     }
     close(FLIST);
@@ -123,7 +127,7 @@ if ($opt{flist}) {
 
 if ($opt{map}) {
     while (@ARGV) {
-	my($from, $to) = split /\s*=>\s*/, shift;
+	my($from, $to) = split /\s*=[=>]\s*/, shift;
 	$to ||= shift;
 	die "$prog: Error: odd number of files specified with -map\n" if !$to;
 	next if -d $from;
@@ -131,6 +135,8 @@ if ($opt{map}) {
     }
 } else {
     push(@ARGV, $opt{sbase}) if !@ARGV && !%transfer;
+    # Convert warnings from within find() into fatal errors.
+    local $SIG{__WARN__} = sub { die "$prog: Error: @_" };
     for my $pname (@ARGV) {
 	find(\&wanted, $pname);
     }
@@ -162,11 +168,14 @@ $sync->analyze;
 # If -preview, give a preview and exit. Ask for OK to proceed unless -yes.
 if (!$opt{yes} || $opt{preview}) {
     my $changes = $sync->preview($opt{rm});
-    exit 0 if $opt{preview};
     if (!$changes) {
-	warn "Warning: cannot predict -rm behavior\n" if $opt{rm};
-	exit 0;
+	if ($opt{rm}) {
+	    warn "Warning: -rm behavior cannot be predicted ...\n";
+	} else {
+	    exit 0;
+	}
     }
+    exit 0 if $opt{preview};
     my $msg = "Continue with these $changes file changes?";
     $msg = qq("$msg") if MSWIN;
     exit 0 if system(qw(clearprompt proceed -pro), $msg);
@@ -188,9 +197,11 @@ $sync->eltypemap('\.xml$' => 'compressed_file');
 $sync->err_handler(0);
 # Prompt the user before checkin if -yes not in use.
 if (!$opt{yes} && !$opt{ci}) {
-    my $msg = "Check in all changes?";
+    my $msg = "Check in all changes ('abort' to unco)?";
     $msg = qq("$msg") if MSWIN;
-    $opt{ci} = 1 if !system(qw(clearprompt proceed -pro), $msg);
+    my $resp = system(qw(clearprompt yes_no -pro), $msg);
+    $sync->fail if $resp > 1;
+    $opt{ci} = !$resp;
 }
 # Now check in the changes: one at a time if -cr, otherwise
 # all at once.
@@ -216,23 +227,24 @@ relative paths under "/vobs_tps/xxx". Check in when done.]
 
   synctree -cr -sbase /vobs/hpux/bin -dbase /vobs_rel/hpux/bin
 
-[Sync up all files under "/vobs_rel/hpux/bin" with those in
+[Sync all files under "/vobs_rel/hpux/bin" with those in
 "/vobs/hpux/bin", making sure to preserve their CR's.]
 
   synctree -sb /A/B -db /X/Y -map /A/B/foo /X/Y/bar /A/B/here /X/Y/there
 
-Take 'foo' from directory /A/B and check it in as 'bar' in /X/Y.  Same
-for 'here' and 'there'.
+Take 'foo' from directory /A/B and check it in as 'bar' in /X/Y.
+Similarly for 'here' and 'there'.
 
 =head1 DESCRIPTION
 
-Brings a VOB area into alignment with a specified set of files from
-a source area. This is analogous in some ways to clearexport_*
-and clearimport but those cannot work incrementally; they do
-an all-or-nothing import. Synctree is useful if you have a
-ClearCase tree that must be kept in sync with a CVS tree during
-a transition period, or for overlaying releases of third-party
-products upon previous ones, or similar.
+Brings a VOB area into alignment with a specified set of files from a
+source area. This is analogous in some ways to clearexport_* and
+clearimport but those cannot work incrementally; they do an
+all-or-nothing import. Synctree is useful if you have a ClearCase tree
+that must be kept in sync with a CVS tree during a transition period,
+or for overlaying releases of third-party products upon previous ones,
+or exporting deliverable files from a nightly build to a release VOB
+while preserving CR's, or similar.
 
 The default operation is to mkelem all files which exist in
 I<E<lt>srcE<gt>> but not in I<E<lt>destE<gt>>, modify any files which
@@ -295,6 +307,48 @@ in files specified via B<-flist>, thus:
   /etc/passwd => /vobs_etc/foo
   /etc/group  => /vobs_etc/bar
   EOF
+
+=head1 COMPARISONS
+
+Synctree is comparable to I<citree> and I<clearfsimport>. It is similar
+to citree but runs on both Windows and UNIX. It has the following
+advantages over clearfsimport:
+
+=over 4
+
+=item *
+
+Synctree works with ClearCase versions prior to 4.1.
+
+=item *
+
+Synctree handles C<MVFS->MVFS> transfers while preserving CR's whereas
+clearfsimport does C<flat_file_system->MVFS> only.
+
+=item *
+
+Synctree has support for mapping filenames in transit and a I<-Narrow>
+option for limiting the set of files to transfer.
+
+=item *
+
+Synctree is built on an API (B<ClearCase::SyncTree>) which aids custom
+tool development in Perl whereas clearfsimport is a command-line
+interface only.
+
+=item *
+
+Synctree may at some point (but does not yet) have support for
+I<element retention>. I.e. if an element is added in one pass and
+removed (rmnamed) in a subsequent pass, and if a third pass would make
+another element of the same name, synctree could optionally make a link
+to the existing file instead of creating what might be a "evil twin".
+
+=back
+
+However, unless one of the above applies the supported, integrated
+solution (B<clearfsimport>) is generally preferable. And of course all
+of these features I<may> eventually be supported by clearfsimport.
 
 =head1 DEBUGGING
 

@@ -4,8 +4,28 @@ control by making the minimal set of required changes and running the
 minimal set of cleartool operations. The real code is in the module,
 but a wrapper script 'synctree' is provided for command-line access.
 For those familar with 'citree', consider this a version of citree that
-works on both UNIX and Windows NT (citree is UNIX-only).  Note: newer
-versions may be present at
+works on both UNIX and Windows NT (citree is UNIX-only).
+
+The most common use for SyncTree is probably in moving the results of a
+build from their build locations to a staging area or release VOB while
+preserving CR's and potentially changing names/paths en route.  That's
+the purpose it was originally designed for.
+
+As of ClearCase 4.1 there's a new 'clearfsimport' tool which will have
+the effect of obsoleting citree and many uses of synctree. However,
+there remain some cases where synctree may be preferable; for instance
+it (1) works with versions prior to 4.1, (2) handles MVFS->MVFS
+transfers while preserving CR's whereas clearfsimport does
+flat_file_system->MVFS only, (3) has support for mapping filenames in
+transit and a -Narrow option for limiting the set of files to transfer,
+and (4) provides an API (ClearCase::SyncTree) for custom tool
+development in Perl whereas clearfsimport is a command-line interface
+only. But in most cases the supported, integrated solution is to be
+preferred and clearfsimport has advantages over synctree which aren't
+discussed here (at the least it's somewhat faster though neither could
+be described as quick).
+
+Note: newer versions of ClearCase::SyncTree may be present at
 <A HREF="http://www.perl.com/CPAN-local/modules/by-module/IPC/DSB/">
 http://www.perl.com/CPAN-local/modules/by-module/IPC/DSB/</A>.
 </BODY></HTML>
