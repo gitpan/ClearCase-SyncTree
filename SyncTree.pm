@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.31';
+$VERSION = '0.35';
 
 require 5.004;
 
@@ -56,6 +56,25 @@ sub err_handler {
     }
 }
 
+# For internal use only.  Provides a std msg format.
+sub _msg {
+    my $prog = basename($0);
+    my $type = shift;
+    my $msg = "@_";
+    chomp $msg;
+    return "$prog: $type: $msg\n";
+}
+
+# For internal use only.  A synonym for die() with a std error msg format.
+sub fatal {
+    die _msg('Error', @_);
+}
+
+# For internal use only.  A synonym for warn() with a std error msg format.
+sub warning {
+    warn _msg('Warning', @_);
+}
+
 # For internal use only.  Returns the ClearCase::Argv object.
 sub ct {
     my $self = shift;
@@ -88,10 +107,28 @@ sub protect {
     return $self->{ST_PROTECT};
 }
 
+sub remove {
+    my $self = shift;
+    $self->{ST_REMOVE} = shift if @_;
+    return $self->{ST_REMOVE};
+}
+
 sub reuse {
     my $self = shift;
     $self->{ST_REUSE} = shift if @_;
     return $self->{ST_REUSE};
+}
+
+sub ignore_co {
+    my $self = shift;
+    $self->{ST_IGNORE_CO} = shift if @_;
+    return $self->{ST_IGNORE_CO};
+}
+
+sub overwrite_co {
+    my $self = shift;
+    $self->{ST_OVERWRITE_CO} = shift if @_;
+    return $self->{ST_OVERWRITE_CO};
 }
 
 sub snapdest {
@@ -146,15 +183,15 @@ sub canonicalize {
     }
 }
 
+# Returns -other and -do private files. Checkouts are handled separately.
 sub _lsprivate {
     my $self = shift;
     my $implicit_dirs = shift;
     my $base = $self->dstbase;
-    my $basedot = "$base/.";			# force symlinks to be resolved
     my $dv = $self->dstview;
     my $ct = $self->clone_ct;
     my @vp;
-    for ($ct->argv('lsp', [qw(-oth -s -inv), $basedot, '-tag', $dv])->qx) {
+    for ($ct->argv('lsp', [qw(-oth -do -s -inv), "$base/.", '-tag', $dv])->qx) {
 	$_ = $self->normalize($_);
 	push(@vp, $_) if m%^\Q$base/%;
     }
@@ -217,6 +254,7 @@ sub dstbase {
 	-e $dbase || mkpath($dbase, 0, 0777) || die "$0: Error: $dbase: $!";
 	my $olddir = getcwd;
 	chdir($dbase) || die "$0: Error: $dbase: $!";
+	$dbase = getcwd;
 	my $ct = ClearCase::Argv->new({-autofail=>1, -autochomp=>1});
 	my $dv = $ct->pwv(['-s'])->qx;
 	die "$0: Error: destination base ($dbase) not in a view/VOB context"
@@ -394,9 +432,65 @@ sub eltypemap {
     return $self->{ST_ELTYPEMAP} ? %{$self->{ST_ELTYPEMAP}} : ();
 }
 
+sub dstcheck {
+    my $self = shift;
+    my $dbase = $self->dstbase;
+    die "$0: Error: must specify dest base before dstcheck" if !$dbase;
+    my @existing = ();
+    if (-e $dbase) {
+	# Check for view private files under the dest base.
+	my @vp = $self->_lsprivate(0);
+	my $n = @vp;
+	my $s = $n == 1 ? '' : 's';
+	my $es = $n == 1 ? 's' : '';
+	die "$0: Error: $n view-private file$s exist$es under $dbase:\n @vp\n"
+									if @vp;
+	# Check for checkouts under the dest base.
+	@existing = $self->_lsco;
+	$n = @existing;
+	$s = $n >= 2 ? 's' : '';
+	if ($n == 0) {
+	    # do nothing
+	} elsif ($self->ignore_co) {
+	    warning "skipping $n checkout$s under $dbase";
+	} elsif ($self->overwrite_co) {
+	    warning "overwriting $n checkout$s under $dbase";
+	} else {
+	    fatal("$n checkout$s found under $dbase");
+	}
+    }
+    $self->{ST_PRE} = { map {$_ => 1} @existing };
+}
+
+sub _needs_update {
+    my($self, $src, $dst, $comparator) = @_;
+    my $update = 0;
+    if (-l $src && -l $dst) {
+	my $srctext = readlink $src;
+	my $desttext = readlink $dst;
+	$update = !defined($comparator) || ($srctext ne $desttext);
+    } elsif (! -l $src && ! -l $dst) {
+	if (!defined($comparator)) {
+	    $update = 1;
+	} elsif (-s $src != -s $dst) {
+	    $update = 1;
+	} else {
+	    $update = &$comparator($src, $dst);
+	    die "$0: Error: failed comparing $src vs $dst: $!"
+							if $update < 0;
+	}
+    } else {
+	$update = 1;
+    }
+    if ($update && (!exists($self->{ST_PRE}->{$dst}) || $self->overwrite_co)) {
+	return 1;
+    } else {
+	return 0;
+    }
+}
+
 sub analyze {
     my $self = shift;
-    my $rm = shift;
     my $type = ref($_[0]) ? ${shift @_} : 'NORMAL';
     my $sbase = $self->srcbase;
     my $dbase = $self->dstbase;
@@ -405,47 +499,23 @@ sub analyze {
     $self->snapdest(1) if ! -e "$dbase@@/main" && ! -e "$dbase/@@/main";
     $self->_mkbase;
     my $ct = $self->clone_ct({-autochomp=>0});
-    if (-e $dbase) {
-	my @vp = $self->_lsprivate(0);
-	my $n = @vp;
-	die "$0: Error: $n view-private files exist under $dbase:\n @vp\n"
-									if @vp;
-    }
     # Derive the add and modify lists by traversing the src map and
     # comparing src/dst files.
     delete $self->{ST_ADD};
     delete $self->{ST_MOD};
-    my $compare = $self->cmp_func;
+    my $comparator = $self->no_cmp ? undef : $self->cmp_func;
     for (sort keys %{$self->{ST_SRCMAP}}) {
 	next if $self->{ST_SRCMAP}->{$_}->{type} &&
 		$self->{ST_SRCMAP}->{$_}->{type} !~ /$type/;
 	my $src = join('/', $sbase, $_);
 	$src = $_ if ! -e $src && (MSWIN || ! -l $src);
 	my $dst = join('/', $dbase, $self->{ST_SRCMAP}->{$_}->{dst} || $_);
-	#$self->{ST_SRCMAP}->{$_}->{dst} = $dst;
+	# It's possible for a symlink to not satisfy -e if it's dangling.
 	if (! -e $dst && ! -l $dst) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
 	} elsif (! -d $src) {
-	    my $update = 0;
-	    if (-l $src && -l $dst) {
-		my $stxt = readlink $src;
-		my $dtxt = readlink $dst;
-		$update = $self->no_cmp || ($stxt ne $dtxt);
-	    } elsif (! -l $src && ! -l $dst) {
-		if ($self->no_cmp) {
-		    $update = 1;
-		} elsif (-s $src != -s $dst) {
-		    $update = 1;
-		} else {
-		    $update = &$compare($src, $dst);
-		    die "$0: Error: failed comparing $src vs $dst: $!"
-								if $update < 0;
-		}
-	    } else {
-		$update = 1;
-	    }
-	    if ($update) {
+	    if ($self->_needs_update($src, $dst, $comparator)) {
 		$self->{ST_MOD}->{$_}->{src} = $src;
 		$self->{ST_MOD}->{$_}->{dst} = $dst;
 	    }
@@ -453,7 +523,7 @@ sub analyze {
     }
     # Last, check for subtractions but only if asked - it's potentially
     # expensive and error-prone.
-    return unless $rm;
+    return unless $self->remove;
     my(%dirs, %files, @xfiles);
     my $wanted = sub {
 	my $path = $File::Find::name;
@@ -466,18 +536,6 @@ sub analyze {
 	(my $relpath = $path) =~ s%^\Q$dbase\E\W?%%;
 	if (-d $path) {
 	    $dirs{$path} = 1;
-=pod
-# contribution by unagler 011212, turned off for now (breaks -rm)
-	    # check if directory must be removed from dbase
-	    my $srcpath = $path;
-	    $srcpath =~ s,$dbase,,;
-	    $srcpath = $sbase.$srcpath;
-	    #print "CHECK: $srcpath\n";
-	    if (! -d $srcpath) {
-	        # directory does not exist in sbase, it must be removed from dbase
-	        $files{$relpath} = $path;
-	    }
-=cut
 	} elsif (-f $path) {
 	    $files{$relpath} = $path;
 	}
@@ -498,7 +556,6 @@ sub analyze {
 
 sub preview {
     my $self = shift;
-    my $rm = shift;
     my $indent = ' ' x 4;
     my($adds, $mods, $subs) = (0, 0, 0);
     if ($self->{ST_ADD}) {
@@ -517,7 +574,7 @@ sub preview {
 			 $self->{ST_MOD}->{$_}->{dst};
 	}
     }
-    if ($rm && $self->{ST_SUB}) {
+    if ($self->remove && $self->{ST_SUB}) {
 	my @exfiles = @{$self->{ST_SUB}->{exfiles}};
 	$subs = @exfiles;
 	print "Subtracting $subs elements:\n" if $subs;
@@ -552,7 +609,8 @@ sub add {
 		copy($src, $dst) || die "$0: Error: $_: $!";
 		utime(time(), (stat $src)[9], $dst) ||
 			warn "Warning: $dst: touch failed";
-		$self->{ST_CI_FROM}->{$_} = $self->{ST_ADD}->{$_};
+		$self->{ST_CI_FROM}->{$_} = $self->{ST_ADD}->{$_}
+					    if !exists($self->{ST_PRE}->{$dst});
 	    }
 	} elsif (-l $src) {
 	    open(SLINK, ">$dst$lext") || die "$0: Error: $dst$lext: $!";
@@ -563,7 +621,6 @@ sub add {
 	    $ct->fail;
 	}
     }
-    my $dv = $self->dstview;
     my @candidates = sort $self->_lsprivate(1);
     return if !@candidates;
     # We'll be separating the elements-to-be into files and directories.
@@ -630,27 +687,32 @@ sub add {
 	my $ds = ClearCase::Argv->desc([qw(-s)]);
 	$ds->stderr(1);
 	my $ln = ClearCase::Argv->ln;
-	my(%no_ci, %xkeys);
+	my %reused;
 	for my $elem (keys %files) {
 	    my($name, $dir) = fileparse($elem);
 	    chomp(my @vtree = reverse $vt->args($dir)->qx);
 	    for (@vtree) {
-		if ($snapview ? $ds->args("$_/$name@@/main")->qx !~ /Error:/ :
-							-e "$_/$name@@/main") {
+		next unless m%(\d+)$% && $1 > 0;	# optimization
+		my $dirext = "$_/$name@@/main";
+		if ($snapview ? $ds->args($dirext)->qx !~ /Error:/ :
+							-e $dirext) {
+		    $reused{$elem} = 1;
 		    delete $files{$elem};
 		    unlink($elem);
 		    $ln->args("$_/$name", $elem)->system;
 		    last;
 		}
 	    }
-	    $no_ci{$elem} = 1;
 	}
 	# If any elements were "reconstituted", they must be taken off the
 	# list of elems to be checked in explicitly, since 'ct ln' is
 	# just a directory op.
-	if (!$self->no_cr && %no_ci) {
+	my %xkeys;
+	if (!$self->no_cr && %reused) {
 	    for (keys %{$self->{ST_CI_FROM}}) {
-		if ($no_ci{$self->{ST_CI_FROM}->{$_}->{dst}}) {
+		if (exists($self->{ST_CI_FROM}->{$_})
+			&& exists($self->{ST_CI_FROM}->{$_}->{dst})
+			&& exists($reused{$self->{ST_CI_FROM}->{$_}->{dst}})) {
 		    $xkeys{$_} = 1;
 		}
 	    }
@@ -659,10 +721,19 @@ sub add {
 	    }
 	}
 	# Also, reconstituted elements may now be candidates for
-	# modification. Therefore, re-analyze the situation (the 'add'
-	# list should be null this time through but we don't care about
-	# that by this point).
-	$self->analyze if $self->reuse;
+	# modification. Re-analyze the status for these. If any of
+	# them differ from their counterparts in the src area, copy
+	# them from the ADD list to the MOD list.
+	my $comparator = $self->no_cmp ? undef : $self->cmp_func;
+	for my $elem (keys %{$self->{ST_ADD}}) {
+	    if (exists($reused{$self->{ST_ADD}->{$elem}->{dst}})) {
+		my $src = $self->{ST_ADD}->{$elem}->{src};
+		my $dst = $self->{ST_ADD}->{$elem}->{dst};
+		if ($self->_needs_update($src, $dst, $comparator)) {
+		    $self->{ST_MOD}->{$elem} = $self->{ST_ADD}->{$elem};
+		}
+	    }
+	}
     }
 
     # Now do the files in one fell swoop.
@@ -695,9 +766,13 @@ sub modify {
     }
     my $co = $self->clone_ct('co', $self->comment);
     if (@files) {
-	$co->args(map {$self->{ST_MOD}->{$_}->{dst}} @files)->system;
+	my @toco;
 	for (@files) {
-	    $self->{ST_CI_FROM}->{$_} = $self->{ST_MOD}->{$_} if !$self->no_cr;
+	    my $dst = $self->{ST_MOD}->{$_}->{dst};
+	    push(@toco, $dst) if !exists($self->{ST_PRE}->{$dst});
+	}
+	$co->args(@toco)->system if @toco;
+	for (@files) {
 	    my $src = $self->{ST_MOD}->{$_}->{src};
 	    my $dst = $self->{ST_MOD}->{$_}->{dst};
 	    if (!copy($src, $dst)) {
@@ -707,6 +782,8 @@ sub modify {
 	    }
 	    utime(time(), (stat $src)[9], $dst) ||
 				    warn "Warning: $dst: touch failed";
+	    $self->{ST_CI_FROM}->{$_} = $self->{ST_MOD}->{$_}
+			if !$self->no_cr && !exists($self->{ST_PRE}->{$dst});
 	}
     }
     if (@symlinks) {
@@ -745,10 +822,6 @@ sub subtract {
 	    if (opendir(DIR, $_)) {
 		my @entries = readdir DIR;
 		closedir(DIR);
-=pod # unagler 011212
-# contribution by unagler 011212, turned off for now (breaks -rm)
-		next;	# keep also empty directories
-=cut # unagler 011212 end
 		next if @entries > 2;
 		push(@exdirs, $_);
 		delete $dirs{$_};
@@ -800,6 +873,37 @@ sub label {
     $self->clone_ct->lock("lbtype:$lbtype\@$dbase")->system if $locked;
 }
 
+sub get_addhash {
+    my $self = shift;
+    if ($self->{ST_ADD}) {
+	return
+	    map { $self->{ST_ADD}->{$_}->{src}, $self->{ST_ADD}->{$_}->{dst} }
+		keys %{$self->{ST_ADD}};
+    } else {
+	return ();
+    }
+}
+
+sub get_modhash {
+    my $self = shift;
+    if ($self->{ST_MOD}) {
+	return
+	    map { $self->{ST_MOD}->{$_}->{src}, $self->{ST_MOD}->{$_}->{dst} }
+		keys %{$self->{ST_MOD}};
+    } else {
+	return ();
+    }
+}
+
+sub get_sublist {
+    my $self = shift;
+    if ($self->{ST_SUB}) {
+	return @{$self->{ST_SUB}->{exfiles}};
+    } else {
+	return ();
+    }
+}
+
 sub checkin {
     my $self = shift;
     my $mbase = $self->_mkbase;
@@ -827,8 +931,8 @@ sub checkin {
     }
     # Check in anything not handled above.
     my %checkedout = map {$_ => 1} $self->_lsco;
-    my $dv = $self->dstview;
     my @todo = grep {m%^\Q$mbase%} keys %checkedout;
+    @todo = grep {!exists($self->{ST_PRE}->{$_})} @todo if $self->ignore_co;
     unshift(@todo, $dad) if $checkedout{$dad};
     $ct->argv('ci', [@cmnt, '-ide', @ptime], sort @todo)->system if @todo;
     # Fix the protections of the target files if requested. Unix files
@@ -891,8 +995,9 @@ sub cleanup {
 	}
     }
     my %checkedout = map {$_ => 1} $self->_lsco;
-    my $dv = $self->dstview;
     my @todo = grep {m%^\Q$mbase%} keys %checkedout;
+    @todo = grep {!exists($self->{ST_PRE}->{$_})} @todo
+				    if $self->ignore_co || $self->overwrite_co;
     unshift(@todo, $dad) if $checkedout{$dad};
     $ct->argv('unco', [qw(-rm)], sort {$b cmp $a} @todo)->system if @todo;
 }
@@ -1019,8 +1124,12 @@ lists, this method compares the source and target trees and categorizes
 the required actions into I<additions> (new files in the destination
 area), I<modifications> (those which exist but need to be updated) and
 I<subtractions> (those which no longer exist in the source area).
-After analysis is complete, these actions may be taken via the I<add>,
-I<modify>, and I<subtract> methods as desired.
+After analysis is complete, the corresponding actions may be taken via
+the I<add>, I<modify>, and I<subtract> methods as desired.
+
+However, note that I<subtract> analysis is optional; it must be
+requested by setting the -E<gt>remove attribute prior to calling
+-E<gt>analyze.
 
 =item * -E<gt>add
 
@@ -1035,7 +1144,15 @@ method and updates them in the destination tree.
 =item * -E<gt>subtract
 
 Takes the list of I<subtractions> as determined by the B<analyze>
-method and rmname's them in the destination tree.
+method and rmname's them in the destination tree. The -E<gt>remove attribute
+must have been set prior to calling B<analyze>.
+
+=item * -E<gt>remove
+
+Boolean. The list of files to subtract from the destination area will
+not be derived unless this attribute is set before analysis begins.
+This is because it takes time to do I<subtract> analysis, so there's no
+sense doing it unless you plan to call -E<gt>subtract later.
 
 =item * -E<gt>label
 
@@ -1104,6 +1221,18 @@ to be the same element and link the old and new names.
 Sets a boolean indicating whether to throw away the timestamp of the
 source file and give modified files their checkin date instead. This
 flag is I<false> by default (i.e. checkins have I<-ptime> behavior).
+
+=item * -E<gt>ignore_co/-E<gt>overwrite_co
+
+By default, no view private files are allowed in the dest dir at
+I<-E<gt>analyze> time. This generally means either classic view-private
+files or checked-out elements, which are a form of view-private files.
+The -E<gt>ignore_co attribute causes existing checkouts to be ignored
+instead of being disallowed; they do not cause the operation to abort,
+nor do their contents get modified. The -E<gt>overwrite_co attribute
+also prevents existing checkouts from aborting the operation but it
+causes the checked-out version to be replaced by the contents of the
+source file (if that exists and has different contents of course).
 
 =item * -E<gt>label_mods
 

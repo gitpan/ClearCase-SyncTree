@@ -115,3 +115,29 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- The ->protect() method of SyncTree.pm (and thus the behavior
 	  of the synctree script without -nprotect) on Windows now forces
 	  executable files (*.exe, *.dll, etc.) to be executable.
+
+0.32 Mon Nov 10 18:00:10 EST 2003	(NOT RELEASED)
+	- Fixed a bug when specifying the dest base as "." on Windows.
+
+0.33 Tue Dec  9 13:17:55 EST 2003	(NOT RELEASED)
+	- Bugfix: refuse to proceed if checkouts are sitting in the dest
+	  area.
+	- A certain (small) amount of code cleanup.
+
+0.34 Thu Jan  8 10:47:59 EST 2004	(NOT RELEASED)
+	- Make -Narrow RE case insensitive on Windows.
+	- Fixes to -reuse feature.
+	- Added -ignore_co and -overwrite_co flags to synctree.
+	- ********************NOTE**********************
+	  ***THIS VERSION MAKES AN INCOMPATIBLE CHANGE***
+	  ********************NOTE**********************
+	  The ->analyze method used to check that the dest area was
+	  "safe" before proceeding. This logic has now been moved out
+	  to a separate ->dstcheck method.  The synctree script has
+	  been fixed to make the extra method call; you only need
+	  to worry if you have your own tool built directly on the
+	  ClearCase::SyncTree API.  If so, simply add a call to
+	  ->dstcheck prior to ->analyze.
+
+0.35 Wed Jan 21 15:30:21 EST 2004
+	- Cleaned up and documented the 0.32-0.34 work for release.
