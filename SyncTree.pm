@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.05';
+$VERSION = '0.06';
 
 require 5.004;	# but primarily used/tested with 5.005+
 
@@ -22,7 +22,7 @@ sub new {
     if ($class = ref($proto)) {
 	# Make a (deep) clone of the original
 	require Data::Dumper;
-	eval Data::Dumper->new([$proto], ['self'])->Deepcopy(1)->Dumpxs;
+	eval Data::Dumper->Deepcopy(1)->new([$proto], ['self'])->Dumpxs;
 	return $self;
     }
     $class = $proto;
@@ -50,6 +50,7 @@ sub err_handler {
     }
 }
 
+# For internal use only.  Returns the ClearCase::Argv object.
 sub ct {
     my $self = shift;
     if (!defined(wantarray)) {
@@ -60,7 +61,7 @@ sub ct {
     return $self->{ST_CT};
 }
 
-# For internal use only.  Returns a clone of the ct object.
+# For internal use only.  Returns a clone of the ClearCase::Argv object.
 sub clone_ct {
     my $self = shift;
     my $ct = $self->ct;
@@ -201,6 +202,12 @@ sub srcmap {
     }
 }
 
+sub eltypemap {
+    my $self = shift;
+    %{$self->{ST_ELTYPEMAP}} = @_ if @_;
+    return %{$self->{ST_ELTYPEMAP}};
+}
+
 sub analyze {
     my $self = shift;
     my $type = ref($_[0]) ? ${shift @_} : 'NORMAL';
@@ -226,8 +233,8 @@ sub analyze {
 	if (! -e $dst) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
-	} else {
-	    my $update = $self->{ST_NO_CMP} || compare($src, $dst);
+	} elsif (! -d $src) {
+	    my $update = $self->no_cmp || compare($src, $dst);
 	    if ($update) {
 		warn "Warning: error comparing $src vs $dst" if $update < 0;
 		$self->{ST_MOD}->{$_}->{src} = $src;
@@ -239,6 +246,7 @@ sub analyze {
 
 sub preview {
     my $self = shift;
+    my $subtracting = shift;
     my $fmt = "   %s -> %s\n";
     print "Adding:\n" if $self->{ST_ADD};
     for (keys %{$self->{ST_ADD}}) {
@@ -247,6 +255,10 @@ sub preview {
     print "Modifying:\n" if $self->{ST_MOD};
     for (keys %{$self->{ST_MOD}}) {
 	printf $fmt, $self->{ST_MOD}->{$_}->{src}, $self->{ST_MOD}->{$_}->{dst};
+    }
+    if ($subtracting) {
+	##print "Subtracting:\n" if $self->{ST_MOD};
+	## This part is difficult and I haven't gotten to it yet ...
     }
 }
 
@@ -412,7 +424,7 @@ sub subtract {
 
 sub label {
     my $self = shift;
-    my $lbtype = $self->lbtype;
+    my $lbtype = shift || $self->lbtype;
     return unless $lbtype;
     my $dbase = $self->dstbase;
     my $ct = $self->clone_ct;
@@ -442,6 +454,15 @@ sub checkin {
     my $mbase = $self->_mkbase;
     my $dad = dirname($mbase);
     my $ct = $self->clone_ct;
+    # If special eltypes are registered, chtype them here.
+    if (my %emap = $self->eltypemap) {
+	for my $re (keys %emap) {
+	    my @chtypes = grep {/$re/} map {$self->{ST_ADD}->{$_}->{dst}}
+				       keys %{$self->{ST_ADD}};
+	    next unless @chtypes;
+	    $ct->argv('chtype', [qw(-nc -f), $emap{$re}], @chtypes)->system;
+	}
+    }
     # Do one-by-one ci's with -from (to preserve CR's) unless
     # otherwise requested.
     if (! $self->no_cr) {
@@ -527,7 +548,7 @@ __END__
 
 =head1 NAME
 
-ClearCase::SyncTree - Import a tree of files to a tree of ClearCase elements
+ClearCase::SyncTree - Synchronize a tree of files with a tree of elements
 
 =head1 SYNOPSIS
 
@@ -554,7 +575,166 @@ See the enclosed I<synctree> script for full example usage.
 
 =head1 DESCRIPTION
 
-No detailed documentation yet, sorry. Next version.
+This module provides an infrastructure for programs which want to
+I<synchronize> a set of files, typically a subtree, with a similar
+destination subtree in VOB space.  The enclosed I<synctree> script is
+an example of such a program.
+
+The source area may be in a VOB or may be a regular filesystem; the
+destination area must be in a VOB. Methods are supplied for adding,
+subtracting, and modifying destination files so as to make that area
+look identical to the source.
+
+=head2 CONSTRUCTOR
+
+Use C<ClearCase::SyncTree-E<gt>new> to construct a SyncTree object, which
+can then be filled in and used via the instance methods below.
+
+=head2 INSTANCE METHODS
+
+Following is a brief description of each supported method. Examples
+are given for all methods that take parameters; if no example is
+given usage may be assumed to look like:
+
+    $obj->method;
+
+=over 4
+
+=item * srcbase
+
+Provides the base by which to 'relativize' the incoming pathnames.
+E.g.  with a B<srcbase> of I</tmp/x> the incoming file I</tmp/x/y/z>
+will become I<y/z> and will be deposited under the B<dstbase> (see) by
+that path. Example:
+
+    $obj->srcbase('/var/tmp/newstuff');
+
+=item * dstbase
+
+Provides the root of the tree into which to place the relative paths
+derived from B<srcbase> as described above. Example:
+
+    $obj->dstbase('/vobs/tps/newstuff');
+
+=item * srclist/srcmap
+
+There are two ways to specify the list of incoming files. They may be
+provided as a simple list via B<srclist>, in which case they'll be
+relativized as described above and deposited in B<dstbase>, or they can
+be specified via B<srcmap> which allows the destination file to have a
+different name from the original.
+
+I<srclist> takes a list of input filenames. These may be absolute or relative;
+they will be canonicalized and then relativized internally.
+
+I<srcmap> is similar but takes a hash which maps input filenames to
+their destination counterparts.
+
+Examples:
+
+    $obj->srclist(@ARGV);	# check in the named files
+
+    my %filemap = (x/y/z.c => 'x/y/z.cxx', a/b => 'foo');
+    $obj->srcmap(%filemap);	# check in the named files
+
+=item * analyze
+
+After the object knows its I<srcbase>, I<dstbase>, and input file
+lists, this method compares the source and target trees and categorizes
+the required actions into I<additions> (new files in the destination
+area), I<modifications> (those which exist but need to be updated) and
+I<subtractions> (those which no longer exist in the source area).
+After analysis is complete, these actions may be taken via the I<add>,
+I<modify>, and I<subtract> methods as desired.
+
+=item * add
+
+Takes the list of I<additions> as determined by the B<analyze> method
+and creates them as new elements.
+
+=item * modify
+
+Takes the list of I<modifications> as determined by the B<analyze>
+method and updates them in the destination tree.
+
+=item * subtract
+
+Takes the list of I<subtractions> as determined by the B<analyze>
+method and rmname's them in the destination tree.
+
+=item * label
+
+Labels the new work. The label type can be specified as a parameter;
+otherwise it will be taken from the attribute previously set by the
+I<lbtype> method.
+
+Labeling consists of a I<mklabel -recurse> from I<dstbase> down,
+followed by labeling of parent directories from I<dstbase> B<up> to the
+vob root. Example:
+
+    $obj->label('FOO');
+
+=item * checkin
+
+Checks in all checkouts under the I<dstbase> area.
+
+=item * cleanup
+
+Undoes all checkouts under the I<dstbase> area.
+
+=item * fail
+
+Calls the I<cleanup> method, then exits with a failure status. This is
+the default exception handler; a different handler can be registered
+via the I<err_handler> method (see).
+
+=item * err_handler
+
+Registers an exception handler to be called upon failure of any
+cleartool command. Call with 0 to have no handler Pass it a code ref
+to register a function, with an object and method I<name> to
+register a method. Examples:
+
+    $obj->err_handler(0);		# ignore cleartool errors
+    $obj->err_handler(\&func);		# register func() for errors
+    $obj->err_handler($self, 'method');	# register $obj->method
+
+=item * protect
+
+Sets an attribute which causes the I<checkin> method to align file
+permissions after checking in. By default this attribute is set on
+UNIX, unset on Windows. Example:
+
+    $obj->protect(0);
+
+=item * no_cr
+
+By default, checkins initiated by the I<checkin> method are done one at
+a time using the I<-from> flag. This will preserve config records in
+the case where the input file is a derived object.  Setting the
+I<no_cr> attribute causes checkins to be done in one big C<"cleartool
+ci"> operation, which is faster but loses CR's.
+
+=item * no_cmp
+
+This attribute causes all files which exist in both src and dest areas
+to be considered modified by the I<analyze> method.
+
+=item * comment
+
+Provides a comment to be used by the I<checkin> method. The default
+comment is C<"By:$0">. Example:
+
+    $obj->comment("your comment here");
+
+=item * eltypemap
+
+In case the eltype of a particular file or set of files needs to be
+overridden at creation time. Example:
+
+    $obj->eltypemap('\.(ht|x)ml$' => 'compressed_file');
+
+=back
 
 =head1 AUTHOR
 
@@ -578,10 +758,17 @@ warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 =head1 STATUS
 
-This is currently ALPHA code and, as such, I reserve the right to
-change the API incompatibly. At some point I'll bump the version
-suitably and remove this warning, which will constitute an (almost)
-ironclad promise to leave the API alone.
+This is currently ALPHA code and thus I reserve the right to change the
+API incompatibly. At some point I'll bump the version suitably and
+remove this warning, which will constitute an (almost) ironclad promise
+to leave the interface alone.
+
+=head1 PORTING
+
+This module is known to work on Solaris 2.6-7 and Windows NT 4.0SP3-5,
+and with perl 5.004_04 and 5.6.  As these platforms cover a fairly wide
+range there should be no I<major> portability issues, but please send
+bug reports or patches to the address above.
 
 =head1 SEE ALSO
 

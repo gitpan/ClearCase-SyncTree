@@ -5,9 +5,11 @@ use ClearCase::SyncTree 0.05;
 use File::Basename;
 use File::Find;
 use File::Spec 0.82;
-use Getopt::Long 2.17;
+use Getopt::Long;
 
 use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i;
+
+require 5.005 if MSWIN;
 
 my $prog = basename($0, qw(.pl));
 
@@ -19,25 +21,40 @@ sub usage {
 	print "$prog: Error: $msg\n\n" if $msg;
     }
     print <<EOF;
-Usage: $prog [flags] -sbase <dir> -dbase <vob-dir> [pname ...]
+Usage: $prog [flags] -sbase <dir> -dbase <vob-dir> [pname...]
 Flags:
    -help		Print this message and exit
    -dbase <vob-dir>	The destination base directory
    -sbase <dir>		The source base directory
    -flist <file>	A file containing a list of files or "-" for stdin
    -force		Continue despite errors
-   -ci			Check in changes (default is to leave co'ed).
+   -ci			Check in changes (default is to leave co'ed)
+   -cr			Checkin in such a way as to preserve CR's (slower)
    -subtract		Remove files in dest area that aren't in src
    -label <lbtype>	Apply the specified label when done
+   -preview		Show what would be done without doing it, then exit
+   -testdrive		Do the work, then unco it all and exit
+   -Narrow [!]<re>	Limit files found to those which match /re/
 Examples:
-    $prog -sbase /tmp/newstuff -dbase /vobs_tps/foo
+    $prog -sbase /tmp/newcode -dbase /vobs_tps/foo /tmp/newcode
+    $prog -sbase /tmp/newcode -dbase /vobs_tps/foo -C '\.java\$' /tmp/newcode
+    $prog -sbase /tmp/newcode -dbase /vobs_tps/foo -C !'\.old\$' /tmp/newcode
 EOF
     exit $rc; }
 
 my @sources;
+my($only, $skip);
+my %opt;
 
 sub wanted {
     my $path = File::Spec->rel2abs($File::Find::name);
+    $path =~ s%\\%/%g if MSWIN;
+    if (! -d && defined $opt{Narrow}) {
+	$only ||= join('|', grep !/^!/, @{$opt{Narrow}});
+	return if $only && $path !~ /$only/;
+	$skip = join('|', map {(m/^!(.*)/)[0]} grep /^!/, @{$opt{Narrow}});
+	return if $skip && $path =~ /$skip/;
+    }
     if (-f $_) {
 	push(@sources, $path);
     } elsif (-d _) {
@@ -45,7 +62,6 @@ sub wanted {
 	    $File::Find::prune = 1;
 	    return;
 	}
-	push(@sources, $path);
     } elsif (-l $_) {
 	warn "Warning: $path: not yet supporting symlinks";
     } else {
@@ -54,9 +70,10 @@ sub wanted {
 }
 
 ClearCase::Argv->attropts;
+ClearCase::Argv->inpathnorm(0);
+ClearCase::Argv->outpathnorm(1);
 
 local $Getopt::Long::ignorecase = 0;  # global override for dumb default
-my %opt;
 # A little hack to parse -c <cmnt> independently of -ci etc.
 {
     local $Getopt::Long::autoabbrev = 0;
@@ -64,14 +81,16 @@ my %opt;
     GetOptions(\%opt, 'comment|c=s');
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s
-		     ci|checkin force subtract testdrive
+		     Narrow=s@
+		     help ci cr force preview subtract testdrive
 ));
-usage() if $opt{help} || !@ARGV;
+usage() if $opt{help};
 usage("-sbase is a required flag") if !$opt{sbase};
 usage("-dbase is a required flag") if !$opt{dbase};
 for (@opt{qw(dbase sbase)}) {
     die "$prog: Error: no such directory $_\n" unless -d;
     $_ = File::Spec->rel2abs($_);
+    s%\\%/%g if MSWIN;
 }
 
 if ($opt{flist}) {
@@ -81,13 +100,19 @@ if ($opt{flist}) {
     close(FLIST);
 }
 
-#push(@ARGV, $opt{sbase}) if !@ARGV && !$opt{flist};
+push(@ARGV, $opt{sbase}) if !@ARGV && !@sources;
 for my $pname (@ARGV) {
     find(\&wanted, $pname);
 }
 
+#########################################################################
+# At this point we've parsed the cmd line, derived the file list,
+# etc. and are set to do the real work.
+#########################################################################
+
 # Create a 'synctree' object.
 my $sync = ClearCase::SyncTree->new;
+# Turn off the default exception handler if -force.
 $sync->err_handler(0) if $opt{force};
 # Specify the comment to attach to any changes.
 $sync->comment($opt{comment} || $opt{comment} || "By:$0");
@@ -95,24 +120,34 @@ $sync->comment($opt{comment} || $opt{comment} || "By:$0");
 $sync->srcbase($opt{sbase});
 # Tell it where they're going to ...
 $sync->dstbase($opt{dbase});
-# The label to apply when done ...
-$sync->lbtype($opt{lbtype}) if $opt{lbtype};
 # Supply the list of required files.
 $sync->srclist(@sources);
 # Compare src and dest lists and figure out what to do.
 $sync->analyze;
+# If -preview, five the preview and exit.
+if ($opt{preview}) {
+    $sync->preview($opt{subtract});
+    exit 0;
+}
 # Create new elements in the target area.
 $sync->add;
 # Update existing files which differ between src and dest.
 $sync->modify;
-# Remove any files from dest that aren't in src.
+# Remove any files from dest that aren't in src, if requested.
 $sync->subtract if $opt{subtract};
-# Label the above work, including any still-checked-out files.
-$sync->label;
+# Optionally label the above work, including any still-checked-out files.
+$sync->label($opt{lbtype}) if $opt{lbtype};
 # Undo all work and exit if we're just going for a test drive.
 $sync->fail(0) if $opt{testdrive};
-# Otherwise, check in the changes.
-$sync->checkin if $opt{ci};
+# Workaround for a CC problem - xml files may have binary data.
+$sync->eltypemap('\.xml$' => 'compressed_file');
+# Get rid of any exception handler before starting the checkin
+# process, as once a checkin succeeds there's no going back.
+$sync->err_handler(0);
+# Now check in the changes: one at a time if -cr, otherwise
+# all at once.
+$sync->no_cr unless $opt{cr};
+$sync->checkin if $opt{ci} || $opt{cr};
 
 __END__
 
@@ -122,9 +157,55 @@ synctree - Normalize a tree of files with a tree of ClearCase elements
 
 =head1 SYNOPSIS
 
-Run this script with the C<-help> option for usage details.
+Run this script with the C<-help> option for usage details. Here are
+some additional sample usages with explanations:
+
+  synctree -ci -sbase /tmp/newcode -dbase /vobs_tps/xxx /tmp/newcode/xxx
+
+[Take all files located under /tmp/newcode/xxx, remove the leading
+"/tmp/newcode", from each of their pathnames, and place the remaining
+relative paths under "/vobs_tps/xxx". Check in when done.]
+
+  synctree -cr -sbase /vobs/hpux/bin -dbase /vobs_rel/hpux/bin
+
+[Sync up all files under "/vobs_rel/hpux/bin" with those in
+"/vobs/hpux/bin", making sure to preserve their CR's.]
 
 =head1 DESCRIPTION
+
+Brings a VOB area into alignment with a specified set of files from
+a source area. This is analogous in some ways to clearexport_*
+and clearimport but those cannot work incrementally; they do
+an all-or-nothing import. Synctree is useful if you have a
+ClearCase tree that must be kept in sync with a CVS tree during
+a transition period, or for overlaying releases of third-party
+products upon previous ones, or similar.
+
+The default operation is to mkelem all files which exist in
+I<E<lt>srcE<gt>> but not in I<E<lt>destE<gt>>, modify any files which
+exist in both but differ, but B<not> to remove files which are present
+in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-subtract>
+flag will cause this removal to happen too.
+
+This script must run in a view context; the branching rules of any
+checkouts it does will be governed by that config spec.  Also, the
+directory named by the I<-dbase> flag must exist and lie under a
+mounted VOB tag.
+
+The list of source files to operate on may be provided with the
+I<-flist> option or it may come from C<@ARGV>. Any directories
+encountered on C<@ARGV> will be traversed recursively. If no
+source-file-list is provided at all, the directory specified with
+I<-sbase> is treated as the default.
+
+File paths may be given as relative or absolute; all filenames are
+turned into absolute paths, then the path given with the I<-sbase>
+parameter is removed and replaced with that of I<-dbase> to produce the
+destination pathname.
+
+Consider using the I<-preview> or I<-testdrive> flags the first time
+you use this on a valued VOB, even though nothing irreversible is done
+(e.g.  no I<rmelem>, I<rmbranch>, I<rmver>, I<rmtype>, etc.).
 
 =head1 AUTHOR
 
@@ -136,8 +217,22 @@ Copyright (c) 2000 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute and/or modify it under
 the same terms as Perl itself.
 
+=head1 STATUS
+
+This is currently ALPHA code and thus I reserve the right to change the
+UI incompatibly. At some point I'll bump the version suitably and
+remove this warning, which will constitute an (almost) ironclad promise
+to leave the interface alone.
+
+=head1 PORTING
+
+The guts of this program are in the ClearCase::SyncTree module, which
+is known to work on Solaris 2.6-7 and Windows NT 4.0SP3-5, and with
+perl 5.004_04 and 5.6. The I<synctree> wrapper program per se has had
+only rudimentary testing on Windows but appears to work fine there.
+
 =head1 SEE ALSO
 
-perl(1)
+perl(1), "perldoc ClearCase::SyncTree"
 
 =cut
