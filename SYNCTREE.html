@@ -1,8 +1,8 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
-<title>synctree - Normalize a tree of files with a tree of ClearCase elements</title>
-<link rev="made" href="mailto:perladmin@cleartool.com" />
+<title>synctree - Normalize a tree of flat files with a tree of ClearCase elements</title>
+<link rev="made" href="mailto:dsb@boyski.com" />
 </head>
 
 <body style="background-color: white">
@@ -22,8 +22,6 @@
 	<li><a href="#debugging">DEBUGGING</a></li>
 	<li><a href="#author">AUTHOR</a></li>
 	<li><a href="#copyright">COPYRIGHT</a></li>
-	<li><a href="#status">STATUS</a></li>
-	<li><a href="#porting">PORTING</a></li>
 	<li><a href="#see_also">SEE ALSO</a></li>
 </ul>
 <!-- INDEX END -->
@@ -32,14 +30,14 @@
 <p>
 </p>
 <h1><a name="name">NAME</a></h1>
-<p>synctree - Normalize a tree of files with a tree of ClearCase elements</p>
+<p>synctree - Normalize a tree of flat files with a tree of ClearCase elements</p>
 <p>
 </p>
 <hr />
 <h1><a name="synopsis">SYNOPSIS</a></h1>
 <pre>
   synctree -sbase /tmp/newcode -dbase /vobs_tps/xxx</pre>
-<p>Take all files located under /tmp/newcode/xxx, remove the leading
+<p>Take all files located under /tmp/newcode, remove the leading
 ``/tmp/newcode'', from each of their pathnames, and place the remaining
 relative paths under ``/vobs_tps/xxx''.</p>
 <pre>
@@ -254,7 +252,7 @@ the Argv module on which <em>synctree</em> is built).</p>
 </p>
 <hr />
 <h1><a name="author">AUTHOR</a></h1>
-<p>David Boyce &lt;<a href="mailto:dsbperl@cleartool.com">dsbperl@cleartool.com</a>&gt;</p>
+<p>David Boyce &lt;dsbperl AT boyski.com&gt;</p>
 <p>
 </p>
 <hr />
@@ -262,22 +260,6 @@ the Argv module on which <em>synctree</em> is built).</p>
 <p>Copyright (c) 2000,2001 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute and/or modify it under
 the same terms as Perl itself.</p>
-<p>
-</p>
-<hr />
-<h1><a name="status">STATUS</a></h1>
-<p>This is currently ALPHA code and thus I reserve the right to change the
-UI incompatibly. At some point I'll bump the version suitably and
-remove this warning, which will constitute an (almost) ironclad promise
-to leave the interface alone.</p>
-<p>
-</p>
-<hr />
-<h1><a name="porting">PORTING</a></h1>
-<p>The guts of this program are in the ClearCase::SyncTree module, which
-is known to work on Solaris 2.6-7 and Windows NT 4.0SP3-5, and with
-perl 5.004_04 and 5.6. I would expect it to work on other Unix platforms
-too but have no way to find out.</p>
 <p>
 </p>
 <hr />

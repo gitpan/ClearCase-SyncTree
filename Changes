@@ -108,3 +108,10 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.30 Tue Jul 22 10:33:12 EDT 2003
 	- Fixed contact data.
+
+0.31 Wed Nov  5 08:55:00 EST 2003
+	- Made two fixes provided by Christopher Drexler of Siemens.
+	- Made other fixes provided by James Anderson of Tyco Electronics.
+	- The ->protect() method of SyncTree.pm (and thus the behavior
+	  of the synctree script without -nprotect) on Windows now forces
+	  executable files (*.exe, *.dll, etc.) to be executable.

@@ -20,7 +20,7 @@ $final += printok(1);
 print <<EOF;
 
 It's impractical to do real tests at install time since (a) a great
-deal depends on your local view/VOB configuration and (b) it would
+deal depends on your local view/VOB configuration and (b) testing would
 make permanent changes to a local VOB. So we just test that it loads.
 EOF
 

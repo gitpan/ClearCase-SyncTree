@@ -44,7 +44,7 @@ Flags:
    -c <comment>		Use specified comment for checkins
    -no			Exit after showing a preview
    -yes			Perform all work (except checkin) without prompting
-   -nprotect		Turn off "cleartool protect -chmod" phase (UNIX only)
+   -nprotect		Turn off "cleartool protect -chmod" phase
    -reuse		Attempt to reuse existing elements of same name
    -summary 		Print a summary of cleartool activities when done
    -verbose <n>		Set to 0 for least verbosity, 2 for most (default=1)
@@ -316,13 +316,13 @@ __END__
 
 =head1 NAME
 
-synctree - Normalize a tree of files with a tree of ClearCase elements
+synctree - Normalize a tree of flat files with a tree of ClearCase elements
 
 =head1 SYNOPSIS
 
   synctree -sbase /tmp/newcode -dbase /vobs_tps/xxx
 
-Take all files located under /tmp/newcode/xxx, remove the leading
+Take all files located under /tmp/newcode, remove the leading
 "/tmp/newcode", from each of their pathnames, and place the remaining
 relative paths under "/vobs_tps/xxx".
 
@@ -562,27 +562,13 @@ the Argv module on which I<synctree> is built).
 
 =head1 AUTHOR
 
-David Boyce <dsbperl@cleartool.com>
+David Boyce <dsbperl AT boyski.com>
 
 =head1 COPYRIGHT
 
 Copyright (c) 2000,2001 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute and/or modify it under
 the same terms as Perl itself.
-
-=head1 STATUS
-
-This is currently ALPHA code and thus I reserve the right to change the
-UI incompatibly. At some point I'll bump the version suitably and
-remove this warning, which will constitute an (almost) ironclad promise
-to leave the interface alone.
-
-=head1 PORTING
-
-The guts of this program are in the ClearCase::SyncTree module, which
-is known to work on Solaris 2.6-7 and Windows NT 4.0SP3-5, and with
-perl 5.004_04 and 5.6. I would expect it to work on other Unix platforms
-too but have no way to find out.
 
 =head1 SEE ALSO
 

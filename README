@@ -68,17 +68,17 @@ But in most cases a supported, integrated solution is to be preferred
 and clearfsimport also has advantages over synctree which aren't
 discussed in depth here, such as mastership handling (-master) and the
 ability to go somewhat deeper into the database than an aftermarket
-tool (-nsetevent).  And of course it doesn't require you to have a
-modern (5.6.0+) Perl plus various modules installed. See the
+tool can (see -nsetevent).  And of course it doesn't require you to
+have a modern (5.6.0+) Perl plus various modules installed. See the
 clearfsimport documentation for details.
 
 			PLATFORM NOTES
 
 This package is believed to work on all ClearCase platforms including
-Windows. Note, however, that my only test environments are Solaris 8
-and Windows 2000, Perl 5.6. It worked on Solaris 7 and NT 4.0 when I
-last worked there but I have no way to check these or any other
-platforms now.
+Windows. Note, however, that my only test environments are Solaris 9
+and Windows 2000, Perl 5.8.0. It worked on Solaris 7 and NT 4.0 wth
+Perl 5.6.0 when I last worked there but I have no way to check these or
+any other platforms now.
 
 A sample "synctree.bat" script is provided showing one method of
 invocation on Windows. Other ways (for instance using the .pl file

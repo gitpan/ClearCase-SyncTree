@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.30';
+$VERSION = '0.31';
 
 require 5.004;
 
@@ -34,7 +34,7 @@ sub new {
     bless $self, $class;
     $self->comment('By:' . __PACKAGE__);
     # Default is to sync file modes unless on ^$%#* Windows.
-    $self->protect(MSWIN ? 0 : 1);
+    $self->protect(1);
     # Set up a ClearCase::Argv instance with the appropriate attrs.
     $self->ct;
     # By default we'll call SyncTree->fail on any cleartool error.
@@ -125,7 +125,7 @@ sub normalize {
     for ($path) {
 	if (MSWIN) {
 	    s%^$md:%%;
-	    s%^[\\/]$dv%%;
+	    s%^[\\/]\Q$dv%%;
 	    s%\\%/%g;
 	    $_ = "$md:/$dv$_";
 	} else {
@@ -150,12 +150,13 @@ sub _lsprivate {
     my $self = shift;
     my $implicit_dirs = shift;
     my $base = $self->dstbase;
+    my $basedot = "$base/.";			# force symlinks to be resolved
     my $dv = $self->dstview;
     my $ct = $self->clone_ct;
     my @vp;
-    for ($ct->argv('lsp', [qw(-oth -s -inv), $base, '-tag', $dv])->qx) {
+    for ($ct->argv('lsp', [qw(-oth -s -inv), $basedot, '-tag', $dv])->qx) {
 	$_ = $self->normalize($_);
-	push(@vp, $_) if m%^$base/%;
+	push(@vp, $_) if m%^\Q$base/%;
     }
     push(@vp, @{$self->{ST_IMPLICIT_DIRS}})
 				if $self->{ST_IMPLICIT_DIRS} && $implicit_dirs;
@@ -169,11 +170,11 @@ sub _lsco {
     my %co;
     for ($ct->argv('lsco', [qw(-s -cvi -a)], $base)->qx) {
 	$_ = $self->normalize($_);
-	$co{$_}++ if m%^$base/% || $_ eq $base;
+	$co{$_}++ if m%^\Q$base/% || $_ eq $base;
     }
     for my $dir (@{$self->{ST_IMPLICIT_DIRS}}) {
-	$dir = dirname($dir);
-	$co{$dir}++;
+	my $dirname = dirname($dir);
+	$co{$dirname}++;
     }
     return sort keys %co;
 }
@@ -366,14 +367,14 @@ sub srcmap {
     die "$0: Error: must specify src base before src map" if !$sbase;
     die "$0: Error: must specify dst base before src map" if !$dbase;
     for (keys %sdmap) {
-	if (m%^(?:[a-zA-Z]:)?$sbase[/\\]*(.+)$%) {
+	if (m%^(?:[a-zA-Z]:)?\Q$sbase\E[/\\]*(.+)$%) {
 	    my $key = $1;
 	    $self->{ST_SRCMAP}->{$key}->{type} = $type;
-	    my($dst) = ($sdmap{$_} =~ m%^$dbase[/\\]*(.+)$%);
+	    my($dst) = ($sdmap{$_} =~ m%^\Q$dbase\E[/\\]*(.+)$%);
 	    $self->{ST_SRCMAP}->{$key}->{dst} = $dst;
 	} elsif (-e $_) {
 	    $self->{ST_SRCMAP}->{$_}->{type} = $type;
-	    if ($sdmap{$_} =~ m%^$dbase[/\\]*(.+)$%) {
+	    if ($sdmap{$_} =~ m%^\Q$dbase\E[/\\]*(.+)$%) {
 		$self->{ST_SRCMAP}->{$_}->{dst} = $1;
 	    } else {
 		$self->{ST_SRCMAP}->{$_}->{dst} = $sdmap{$_};
@@ -462,7 +463,7 @@ sub analyze {
 	    return;
 	}
 	# Get a relative path from the absolute path.
-	(my $relpath = $path) =~ s%^$dbase\W?%%;
+	(my $relpath = $path) =~ s%^\Q$dbase\E\W?%%;
 	if (-d $path) {
 	    $dirs{$path} = 1;
 =pod
@@ -525,7 +526,7 @@ sub preview {
 	}
     }
     my $total = $adds + $mods + $subs;
-    print "Element changes: add=$adds modify=$mods subtract=$subs\n";
+    print "Element change summary: add=$adds modify=$mods subtract=$subs\n";
     return $total;
 }
 
@@ -661,7 +662,7 @@ sub add {
 	# modification. Therefore, re-analyze the situation (the 'add'
 	# list should be null this time through but we don't care about
 	# that by this point).
-	$self->analyze;
+	$self->analyze if $self->reuse;
     }
 
     # Now do the files in one fell swoop.
@@ -827,40 +828,51 @@ sub checkin {
     # Check in anything not handled above.
     my %checkedout = map {$_ => 1} $self->_lsco;
     my $dv = $self->dstview;
-    my @todo = grep {m%^$mbase%} keys %checkedout;
+    my @todo = grep {m%^\Q$mbase%} keys %checkedout;
     unshift(@todo, $dad) if $checkedout{$dad};
     $ct->argv('ci', [@cmnt, '-ide', @ptime], sort @todo)->system if @todo;
-    # Fix the protections of the target files if requested.
+    # Fix the protections of the target files if requested. Unix files
+    # get careful consideration of bitmasks etc; Windows files just get
+    # promoted to a+x if their extension looks executable.
     if ($self->protect) {
-	my %perms;
-	for (keys %{$self->{ST_ADD}}) {
-	    my $src = $self->{ST_ADD}->{$_}->{src};
-	    my $dst = $self->{ST_ADD}->{$_}->{dst};
-	    my $src_mode = (stat $src)[2];
-	    my $dst_mode = (stat $dst)[2];
-	    # 07551 represents the only bits that matter to clearcase
-	    if (($src_mode & 07551) ne ($dst_mode & 07551) &&
-		    $src !~ m%\.(?:p|html?|gif|mak|rc|ini|java|
-				c|cpp|cxx|h|bmp|ico)$|akefile%x) {
-		my $sym = sprintf("%o", ($src_mode & 07775) | 0444);
-		push(@${$perms{$sym}}, $dst);
+	if (MSWIN) {
+	    my @exes;
+	    for (keys %{$self->{ST_ADD}}) {
+		next unless m%\.(bat|cmd|exe|dll|com|cgi|.?sh|pl)$%i;
+		push(@exes, $self->{ST_ADD}->{$_}->{dst});
 	    }
-	}
-	for (keys %{$self->{ST_MOD}}) {
-	    my $src = $self->{ST_MOD}->{$_}->{src};
-	    my $dst = $self->{ST_MOD}->{$_}->{dst};
-	    my $src_mode = (stat $src)[2];
-	    my $dst_mode = (stat $dst)[2];
-	    # 07551 represents the only bits that matter to clearcase
-	    if (($src_mode & 07551) ne ($dst_mode & 07551) &&
-		    $src !~ m%\.(?:p|html?|gif|mak|rc|ini|java|
-				c|cpp|cxx|h|bmp|ico)$|akefile%x) {
-		my $sym = sprintf("%o", ($src_mode & 07775) | 0444);
-		push(@${$perms{$sym}}, $dst);
+	    $ct->argv('protect', [qw(-chmod a+x)], @exes)->system if @exes;
+	} else {
+	    my %perms;
+	    for (keys %{$self->{ST_ADD}}) {
+		my $src = $self->{ST_ADD}->{$_}->{src};
+		my $dst = $self->{ST_ADD}->{$_}->{dst};
+		my $src_mode = (stat $src)[2];
+		my $dst_mode = (stat $dst)[2];
+		# 07551 represents the only bits that matter to clearcase
+		if (($src_mode & 07551) ne ($dst_mode & 07551) &&
+			$src !~ m%\.(?:p|html?|gif|mak|rc|ini|java|
+				    c|cpp|cxx|h|bmp|ico)$|akefile%x) {
+		    my $sym = sprintf("%o", ($src_mode & 07775) | 0444);
+		    push(@${$perms{$sym}}, $dst);
+		}
 	    }
-	}
-	for (keys %perms) {
-	    $ct->argv('protect', ['-chmod', $_], @${$perms{$_}})->system;
+	    for (keys %{$self->{ST_MOD}}) {
+		my $src = $self->{ST_MOD}->{$_}->{src};
+		my $dst = $self->{ST_MOD}->{$_}->{dst};
+		my $src_mode = (stat $src)[2];
+		my $dst_mode = (stat $dst)[2];
+		# 07551 represents the only bits that matter to clearcase
+		if (($src_mode & 07551) ne ($dst_mode & 07551) &&
+			$src !~ m%\.(?:p|html?|gif|mak|rc|ini|java|
+				    c|cpp|cxx|h|bmp|ico)$|akefile%x) {
+		    my $sym = sprintf("%o", ($src_mode & 07775) | 0444);
+		    push(@${$perms{$sym}}, $dst);
+		}
+	    }
+	    for (keys %perms) {
+		$ct->argv('protect', ['-chmod', $_], @${$perms{$_}})->system;
+	    }
 	}
     }
 }
@@ -880,7 +892,7 @@ sub cleanup {
     }
     my %checkedout = map {$_ => 1} $self->_lsco;
     my $dv = $self->dstview;
-    my @todo = grep {m%^$mbase%} keys %checkedout;
+    my @todo = grep {m%^\Q$mbase%} keys %checkedout;
     unshift(@todo, $dad) if $checkedout{$dad};
     $ct->argv('unco', [qw(-rm)], sort {$b cmp $a} @todo)->system if @todo;
 }
@@ -990,7 +1002,7 @@ different name from the source.
 I<srclist> takes a list of input filenames. These may be absolute or
 relative; they will be canonicalized internally.
 
-I<srcmap> is similar but takes a hash mapping input filenames to
+I<srcmap> is similar but takes a hash which maps input filenames to
 their destination counterparts.
 
 Examples:
@@ -1068,10 +1080,15 @@ method, with a scalar ref to count errors. Examples:
 =item * -E<gt>protect
 
 Sets an attribute which causes the I<checkin> method to align file
-permissions after checking in. By default this attribute is set on
-UNIX, unset on Windows. Example:
+permissions after checking in. The meaning of this varies by platform:
+on Unix an attempt is made to bring destination mode bits into
+alignment with those of the source file. On Windows, files with
+extensions such as .exe and .dll are made executable (though most
+Windows filesystems don't pay attention to executable modes, MVFS does
+and thus the execute bit becomes a source of frequent confusion for
+Windows ClearCase users). Example:
 
-    $obj->protect(0);
+    $obj->protect(0);			# no dest mode fixups
 
 =item * -E<gt>reuse
 
@@ -1190,12 +1207,12 @@ Wrong cleanup after detection of own checkouts below VOB destination:
 If the current view has a checkout at the same branch where synctree
 wants to checkout then (a) the whole synctree run is marked as failed
 (which is OK) but (b) the cleanup performs a uncheckout and the user
-will loose the data of its checkout.
+will lose the data of its checkout.
 
 =item * Cleanup Bug #2
 
-Wrong cleanup after detection other checkouts below VOB destination:
-If an other view has a checkout at the same branch where synctree wants
+Wrong cleanup after detecting other checkouts below VOB destination:
+If another view has a checkout at the same branch where synctree wants
 to checkout then (a) the whole synctree run is NOT marked as failed (b)
 only this element is not updated
 
@@ -1207,16 +1224,15 @@ Based on code originally written by Paul D. Smith
 <pausmith@nortelnetworks.com>.  Paul's version was based on the Bourne
 shell script 'citree' delivered as sample code with ClearCase.
 
-Rewritten for Unix/Win32 portability by David Boyce
-<dsbperl@cleartool.com> in 8/1999, then reorganized into a module in
-1/2000. This module no longer bears the slightest resemblance to any
-version of citree.
+Rewritten for Unix/Win32 portability by David Boyce in 8/1999, then
+reorganized into a module in 1/2000. This module no longer bears the
+slightest resemblance to any version of citree.
 
 =head1 COPYRIGHT
 
 Copyright 1997,1998 Paul D. Smith and Bay Networks, Inc.
 
-Copyright 1999-2001 David Boyce (dsbperl@cleartool.com).
+Copyright 1999-2003 David Boyce (dsbperl AT boyski.com).
 
 This script is distributed under the terms of the GNU General Public License.
 You can get a copy via ftp://ftp.gnu.org/pub/gnu/ or its many mirrors.
@@ -1229,6 +1245,13 @@ SyncTree is currently ALPHA code and thus I reserve the right to change
 the API incompatibly. At some point I'll bump the version suitably and
 remove this warning, which will constitute an (almost) ironclad promise
 to leave the interface alone.
+
+Actually, as (a) Rational has released clearfsimport and (b) I am not
+currently doing anything which requires SyncTree (or clearfsimport for
+that matter), there isn't much ongoing support for this module.
+However, it does seem to work fine and the interface hasn't changed in
+two years (!) so I guess we could call that stable. It's unclear
+whether this means stable as in "robust" or stable as in "dead".
 
 =head1 PORTING
 
