@@ -3,7 +3,7 @@ eval 'exec /tools/$MACHINE/bin/perl -S $0 ${1+"$@"}'
     if 0;
 
 use ClearCase::Argv 0.23;
-use ClearCase::SyncTree 0.05;
+use ClearCase::SyncTree 0.19;
 use File::Basename;
 use File::Find;
 use File::Spec 0.82;
@@ -41,6 +41,7 @@ Flags:
    -yes			Perform all work without asking first
    -testdrive		Do the work, then unco it all and exit
    -nprotect		Turn off "cleartool protect -chmod" stage
+   -reuse		Attempt to reuse existing elements of same name
    -Narrow [!]<re>	Limit files found to those which match /re/
    -/dbg=1		Verbose mode: show cleartool cmds as they run
 Notes:
@@ -92,7 +93,7 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 {
     local $Getopt::Long::autoabbrev = 0;
     local $Getopt::Long::passthrough = 1;
-    GetOptions(\%opt, qw(comment|c=s nprotect)) || exit 1;
+    GetOptions(\%opt, qw(comment|c=s nprotect reuse)) || exit 1;
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label|mklabel=s map
 		     Narrow=s@
@@ -151,6 +152,8 @@ if ($opt{map}) {
 my $sync = ClearCase::SyncTree->new;
 # Allow the protect default to be overridden.
 $sync->protect(0) if $opt{nprotect};
+# Attempt element reconstitution.
+$sync->reuse(1) if $opt{reuse};
 # Turn off the default exception handler if -force.
 $sync->err_handler(0) if $opt{force};
 # Specify the comment to attach to any changes.
@@ -167,10 +170,10 @@ $sync->srcmap(%transfer);
 $sync->analyze;
 # If -preview, give a preview and exit. Ask for OK to proceed unless -yes.
 if (!$opt{yes} || $opt{preview}) {
-    my $changes = $sync->preview($opt{rm});
+    my $changes = $sync->preview($opt{rmname});
     if (!$changes) {
-	if ($opt{rm}) {
-	    warn "Warning: -rm behavior cannot be predicted ...\n";
+	if ($opt{rmname}) {
+	    warn "Warning: -rmname behavior cannot be predicted ...\n";
 	} else {
 	    exit 0;
 	}
@@ -185,7 +188,7 @@ $sync->add unless $opt{Add};
 # Update existing files which differ between src and dest.
 $sync->modify unless $opt{Modify};
 # Remove any files from dest that aren't in src, if requested.
-$sync->subtract if $opt{rm};
+$sync->subtract if $opt{rmname};
 # Optionally label the above work, including any still-checked-out files.
 $sync->label($opt{lbtype}) if $opt{lbtype};
 # Undo all work and exit if we're just going for a test drive.
@@ -249,8 +252,8 @@ while preserving CR's, or similar.
 The default operation is to mkelem all files which exist in
 I<E<lt>srcE<gt>> but not in I<E<lt>destE<gt>>, modify any files which
 exist in both but differ, but B<not> to remove files which are present
-in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-rm> flag will
-cause this removal to happen as well.
+in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-rmname> flag
+will cause this removal to happen as well.
 
 This script must run in a view context; the branching behavior of any
 checkouts it makes will be governed by the view's config spec.  Also,

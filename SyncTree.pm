@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.18';
+$VERSION = '0.19';
 
 require 5.004;
 
@@ -42,8 +42,8 @@ sub new {
     $self->ct;
     # By default we'll call SyncTree->fail on any cleartool error.
     $self->err_handler($self, 'fail');
-    ## TAKE THIS 'shift' FEATURE OUT SOON ...
-    $self->cmp_func(@_ ? shift : \&File::Compare::compare);
+    # Set default file comparator.
+    $self->cmp_func(\&File::Compare::compare);
     return $self;
 }
 
@@ -90,6 +90,18 @@ sub protect {
     my $self = shift;
     $self->{ST_PROTECT} = shift if @_;
     return $self->{ST_PROTECT};
+}
+
+sub reuse {
+    my $self = shift;
+    $self->{ST_RECOVER} = shift if @_;
+    return $self->{ST_RECOVER};
+}
+
+sub snapdest {
+    my $self = shift;
+    $self->{ST_SNAPDEST} = shift if @_;
+    return $self->{ST_SNAPDEST};
 }
 
 sub ctime {
@@ -243,6 +255,7 @@ sub analyze {
     my $dbase = $self->dstbase;
     die "Error: must specify dest base before analyzing" if !$dbase;
     die "Error: must specify dest vob before analyzing" if !$self->dstvob;
+    $self->snapdest(1) if ! -e "$dbase@@/main" && ! -e "$dbase/@@/main";
     $self->_mkbase;
     my $ct = $self->clone_ct({-autochomp=>0});
     if (-e $dbase) {
@@ -335,7 +348,7 @@ sub add {
     @candidates = sort grep m%^$mbase%, @candidates;
     return if !@candidates;
     # We'll be separating the elements-to-be into files and directories.
-    my(@files, @symlinks, %dirs);
+    my(%files, @symlinks, %dirs);
     # If the parent directories of any of the candidates are
     # already versioned, we'll need to check them out unless
     # it's already been done.
@@ -358,7 +371,7 @@ sub add {
 	    if ($cand =~ /$lext$/) {
 		push(@symlinks, $cand);
 	    } else {
-		push(@files, $cand);
+		$files{$cand} = 1;
 	    }
 	    next;
 	}
@@ -390,10 +403,37 @@ sub add {
 	rmdir $tmpdir || warn "Error: $tmpdir: $!";
     }
 
-    # Now do the files in one fell swoop.
-    $ct->argv('mkelem', $self->comment, @files)->system if @files;
+    # Optionally, reconstitute an old element of the same name if present.
+    if ($self->reuse) {
+	my $snapview = $self->snapdest;
+	my $vt = ClearCase::Argv->lsvtree([qw(-a -s -nco)]);
+	my $ds = ClearCase::Argv->desc([qw(-s)]);
+	$ds->stderr(1);
+	my $ln = ClearCase::Argv->ln;
+	for my $elem (keys %files) {
+	    my($name, $dir) = fileparse($elem);
+	    chomp(my @vtree = reverse $vt->args($dir)->qx);
+	    for (@vtree) {
+		if ($snapview ? $ds->args("$_/$name@@/main")->qx !~ /Error:/ :
+							-e "$_/$name@@/main") {
+		    delete $files{$elem};
+		    unlink($elem);
+		    $ln->args("$_/$name", $elem)->system;
+		    last;
+		}
+	    }
+	}
+	# If any elements were "reconstituted" they may be candidates for
+	# modification. Therefore, re-analyze the situation (the 'add'
+	# list should be null this time through but we don't care about
+	# that by this point).
+	$self->analyze;
+    }
 
-    # Last, deal with symlinks.
+    # Now do the files in one fell swoop.
+    $ct->argv('mkelem', $self->comment, sort keys %files)->system if %files;
+
+    # Deal with symlinks.
     for my $symlink (@symlinks) {
 	(my $lnk = $symlink) =~ s/$lext$//;
 	if (!open(SLINK, $symlink)) {
@@ -806,6 +846,15 @@ UNIX, unset on Windows. Example:
 
     $obj->protect(0);
 
+=item * -E<gt>reuse
+
+Attempt "element reuse". Before creating a new file with I<mkelem>,
+look through its directory's version tree to see if another of the same
+name exists in any other version. If so, assume the new file intended
+to be the same element and link the old and new names.
+
+    $obj->reuse(1);
+
 =item * -E<gt>ctime
 
 Sets a boolean indicating whether to throw away the timestamp of the
@@ -867,6 +916,12 @@ via -E<gt>add, the result will be a new element (aka I<evil twin>).
 SyncTree does not have the smarts to find the old element of the same
 name and relink to it. This could be handled but I haven't yet needed
 it.
+
+=item *
+
+I have not tested SyncTree in snapshot views and would not expect it to
+work out of the box, though the fixes would be largely mechanical.  At
+the least, though, expect it to be slower in a snapshot view.
 
 =back
 

@@ -44,5 +44,12 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Added -map and -nprotect flags to synctree script.
 
 0.18 Wed Nov  1 21:44:31 EST 2000
-	- Fixed a pretty bad bug causing failures to remove view-private
+	- Fixed a pretty bad bug causing a failure to remove view-private
 	  files it didn't create.
+
+0.19 Sun Nov 12 21:04:17 EST 2000
+	- Removed undocumented constructor param for setting comparator.
+	  (use ->cmp_func instead).
+	- Fixed a recently-introduced bug breaking -rm/name.
+	- Added a ->reuse method to SyncTree and -reuse flag to synctree.
+	  (tested exactly once on one file).
