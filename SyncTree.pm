@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.36';
+$VERSION = '0.37';
 
 require 5.004;
 
@@ -1022,7 +1022,7 @@ sub fail {
     my $rc = shift;
     $self->ct->autofail(0);	# avoid exception-handler loop
     $self->cleanup;
-    exit defined($rc) ? $rc : 2;
+    exit(defined($rc) ? $rc : 2);
 }
 
 sub version {
