@@ -29,7 +29,7 @@ Flags:
    -flist <file>	A file containing a list of files or "-" for stdin
    -force		Continue despite errors
    -ci			Check in changes (default is to leave co'ed)
-   -cr			Checkin in such a way as to preserve CR's (slower)
+   -cr			Check in in such a way as to preserve CR's (slower)
    -ctime		Checked in files get current time (no -ptime)
    -rm			Remove files in dest area that aren't in src
    -label <lbtype>	Apply the specified label when done
@@ -43,8 +43,8 @@ Note:
     All flags may be abbreviated to their shortest unique name.
 Examples:
     $prog -sbase /tmp/newcode -dbase /vobs_tps/foo /tmp/newcode
-    $prog -sbase /tmp/newcode -dbase /vobs_tps/foo -C '\.java\$' /tmp/newcode
-    $prog -sbase /tmp/newcode -dbase /vobs_tps/foo -C !'\.old\$' /tmp/newcode
+    $prog -sb /tmp/newcode -db /vobs_tps/foo -N '\.java\$' /tmp/newcode
+    $prog -sb /tmp/newcode -db /vobs_tps/foo -N '!\.old\$' /tmp/newcode
 EOF
     exit $rc; }
 

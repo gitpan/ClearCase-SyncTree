@@ -17,3 +17,4 @@ open(STDERR, ">&STDOUT");
 use ClearCase::SyncTree;
 $final += printok(1);
 
+exit $final;

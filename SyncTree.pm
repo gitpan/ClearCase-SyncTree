@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.13';
+$VERSION = '0.14';
 
 require 5.004;
 
@@ -24,7 +24,12 @@ sub new {
     if ($class = ref($proto)) {
 	# Make a (deep) clone of the original
 	require Data::Dumper;
-	eval Data::Dumper->Deepcopy(1)->new([$proto], ['self'])->Dumpxs;
+	# Older versions may not have the XS version installed ...
+	if (defined $Data::Dumper::Dumpxs) {
+	    eval Data::Dumper->Deepcopy(1)->new([$proto], ['self'])->Dumpxs;
+	} else {
+	    eval Data::Dumper->Deepcopy(1)->new([$proto], ['self'])->Dump;
+	}
 	return $self;
     }
     $class = $proto;
@@ -679,7 +684,7 @@ given usage may be assumed to look like:
 
 =over 4
 
-=item * srcbase
+=item * -E<gt>srcbase
 
 Provides the base by which to 'relativize' the incoming pathnames.
 E.g.  with a B<srcbase> of I</tmp/x> the incoming file I</tmp/x/y/z>
@@ -688,20 +693,20 @@ that path. Example:
 
     $obj->srcbase('/var/tmp/newstuff');
 
-=item * dstbase
+=item * -E<gt>dstbase
 
 Provides the root of the tree into which to place the relative paths
 derived from B<srcbase> as described above. Example:
 
     $obj->dstbase('/vobs/tps/newstuff');
 
-=item * srclist/srcmap
+=item * -E<gt>srclist/-E<gt>srcmap
 
 There are two ways to specify the list of incoming files. They may be
 provided as a simple list via B<srclist>, in which case they'll be
 relativized as described above and deposited in B<dstbase>, or they can
 be specified via B<srcmap> which allows the destination file to have a
-different name from the original.
+different name from the source.
 
 I<srclist> takes a list of input filenames. These may be absolute or relative;
 they will be canonicalized and then relativized internally.
@@ -716,7 +721,7 @@ Examples:
     my %filemap = (x/y/z.c => 'x/y/z.cxx', a/b => 'foo');
     $obj->srcmap(%filemap);	# check in the named files
 
-=item * analyze
+=item * -E<gt>analyze
 
 After the object knows its I<srcbase>, I<dstbase>, and input file
 lists, this method compares the source and target trees and categorizes
@@ -726,22 +731,22 @@ I<subtractions> (those which no longer exist in the source area).
 After analysis is complete, these actions may be taken via the I<add>,
 I<modify>, and I<subtract> methods as desired.
 
-=item * add
+=item * -E<gt>add
 
 Takes the list of I<additions> as determined by the B<analyze> method
 and creates them as new elements.
 
-=item * modify
+=item * -E<gt>modify
 
 Takes the list of I<modifications> as determined by the B<analyze>
 method and updates them in the destination tree.
 
-=item * subtract
+=item * -E<gt>subtract
 
 Takes the list of I<subtractions> as determined by the B<analyze>
 method and rmname's them in the destination tree.
 
-=item * label
+=item * -E<gt>label
 
 Labels the new work. The label type can be specified as a parameter;
 otherwise it will be taken from the attribute previously set by the
@@ -753,21 +758,21 @@ vob root. Example:
 
     $obj->label('FOO');
 
-=item * checkin
+=item * -E<gt>checkin
 
 Checks in all checkouts under the I<dstbase> area.
 
-=item * cleanup
+=item * -E<gt>cleanup
 
 Undoes all checkouts under the I<dstbase> area.
 
-=item * fail
+=item * -E<gt>fail
 
 Calls the I<cleanup> method, then exits with a failure status. This is
 the default exception handler; a different handler can be registered
 via the I<err_handler> method (see).
 
-=item * err_handler
+=item * -E<gt>err_handler
 
 Registers an exception handler to be called upon failure of any
 cleartool command. Call with 0 to have no handler Pass it a code ref
@@ -778,7 +783,7 @@ register a method. Examples:
     $obj->err_handler(\&func);		# register func() for errors
     $obj->err_handler($self, 'method');	# register $obj->method
 
-=item * protect
+=item * -E<gt>protect
 
 Sets an attribute which causes the I<checkin> method to align file
 permissions after checking in. By default this attribute is set on
@@ -786,13 +791,13 @@ UNIX, unset on Windows. Example:
 
     $obj->protect(0);
 
-=item * ctime
+=item * -E<gt>ctime
 
 Sets a boolean indicating whether to throw away the timestamp of the
 source file and give modified files their checkin date instead. This
 flag is I<false> by default (i.e. checkins have I<-ptime> behavior).
 
-=item * no_cr
+=item * -E<gt>no_cr
 
 By default, checkins initiated by the I<checkin> method are done one at
 a time using the I<-from> flag. This will preserve config records in
@@ -800,19 +805,19 @@ the case where the input file is a derived object.  Setting the
 I<no_cr> attribute causes checkins to be done in one big C<"cleartool
 ci"> operation, which is faster but loses CR's.
 
-=item * no_cmp
+=item * -E<gt>no_cmp
 
 This attribute causes all files which exist in both src and dest areas
 to be considered modified by the I<analyze> method.
 
-=item * comment
+=item * -E<gt>comment
 
 Provides a comment to be used by the I<checkin> method. The default
 comment is C<"By:$0">. Example:
 
     $obj->comment("your comment here");
 
-=item * eltypemap
+=item * -E<gt>eltypemap
 
 In case the eltype of a particular file or set of files needs to be
 overridden at creation time. Example:
@@ -821,6 +826,11 @@ overridden at creation time. Example:
 
 =back
 
+=head1 BUGS
+
+Subtraction of symlinks is currently unimplemented (it's just a little
+corner case I haven't gotten to).
+
 =head1 AUTHOR
 
 Based on code originally written by Paul D. Smith
@@ -828,7 +838,8 @@ Based on code originally written by Paul D. Smith
 shell script 'citree' delivered as sample code with ClearCase.
 
 Rewritten for Unix/Win32 portability by David Boyce <dsb@world.std.com>
-in 8/1999, then reorganized into a module in 1/2000.
+in 8/1999, then reorganized into a module in 1/2000. This module no
+longer bears the slightest resemblance to citree.
 
 =head1 COPYRIGHT
 
