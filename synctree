@@ -2,14 +2,14 @@
 
 use Benchmark;
 use ClearCase::Argv 1.00;
-use ClearCase::SyncTree 0.23;
+use ClearCase::SyncTree 0.28;
 use File::Basename;
 use File::Find;
 use File::Path;
 use File::Spec 0.82;
 use Getopt::Long;
 
-use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i;
+use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i ? 1 : 0;
 
 require 5.005 if MSWIN;
 
@@ -36,13 +36,14 @@ Flags:
    -stop		Stop at the first error (no cleanup)
    -ci			Check in changes (default is to leave co'ed)
    -cr			Check in so as to preserve CR's (slower)
+   -vp			Ignore versioned elements in src area
    -ctime		Checked in files get current time (no -ptime)
    -rmname		Remove files from dest area that aren't in src
    -label <lbtype>	Apply the specified label recursively to -dbase
    -lbmods		Apply the -label lbtype only to modified elems
    -c <comment>		Use specified comment for checkins
    -no			Exit after showing a preview
-   -yes			Perform all work without prompts
+   -yes			Perform all work (except checkin) without prompting
    -nprotect		Turn off "cleartool protect -chmod" phase (UNIX only)
    -reuse		Attempt to reuse existing elements of same name
    -summary 		Print a summary of cleartool activities when done
@@ -56,7 +57,7 @@ Notes:
     Or "perldoc ClearCase::SyncTree" for even more documentation.
 Examples:
     $prog -sbase /tmp/newcode -dbase /vobs_tps/foo /tmp/newcode
-    $prog -sb /tmp/newcode -db /vobs_tps/foo -N '\.java\$' -rm -yes
+    $prog -sb /tmp/newcode -db /vobs_tps/foo -N '\.java\$' -rm -yes -ci
     $prog -sb /tmp/newcode -db /vobs_tps/foo -N '!\.old\$' -reuse 
 EOF
     exit $retcode;
@@ -77,6 +78,9 @@ my(%opt, %xfer);
 	}
 	if (-f $_ || -l $_) {
 	    if (-r _) {
+		# Skip versioned elements if requested.
+		return if $opt{vp} && (-e "$_@@/main/0" || -e "$_/@@/main/0");
+		# Passed all tests, put it on the list.
 		$xfer{$path} = $path;
 	    } else {
 		print STDERR "$prog: Error: permission denied: $path\n";
@@ -86,6 +90,14 @@ my(%opt, %xfer);
 		$File::Find::prune = 1;
 		return;
 	    }
+# contribution by unagler 011212, turned off for now (breaks -rm)
+=pod
+	    # Keep directories in the list only if they're empty.
+	    opendir(DIR, $_) || warn "$prog: Error: $_: $!";
+	    my @entries = readdir DIR;
+	    closedir(DIR);
+	    $xfer{$path} = $path if @entries == 2;
+=cut
 	} elsif (! -e _) {
 	    die "$prog: Error: no such file or directory: $path\n";
 	} else {
@@ -109,7 +121,7 @@ GetOptions(\%opt, qw(sbase=s dbase=s flist=s label|mklabel=s lbmods map
 		     Narrow=s@
 		     ci cr ctime follow force reuse rmname stop
 		     help no ok quiet yes
-		     summary verbose=i Version
+		     summary verbose=i vp Version
 )) || exit 1;
 usage() if $opt{help};
 if ($opt{Version}) {
@@ -179,7 +191,14 @@ if ($opt{flist}) {
 	die "$prog: Error: $from: No such file or directory\n" unless -e $from;
 	die "$prog: Error: to-file '$to' not under $opt{dbase}\n"
 				if $to !~ m%^$opt{dbase}%;
-	next if -d $from;
+	if (-d $from) {
+	    next;	# suppress unagler's contribution (breaks -rm)
+	    # Keep directories in the list only if they're empty.
+	    opendir(DIR, $from) || warn "$prog: Error: $from: $!";
+	    my @entries = readdir DIR;
+	    closedir(DIR);
+	    next unless @entries == 2;
+	}
 	$from =~ s%\\%/%g if MSWIN;
 	$to   =~ s%\\%/%g if MSWIN;
 	$xfer{$from} = $to;
@@ -254,7 +273,7 @@ if (!$opt{yes} || $opt{no}) {
     my $changes = $sync->preview($opt{rmname});
     exit 0 unless $changes;
     exit 0 if $opt{no};
-    my $msg = "Continue with these $changes file changes?";
+    my $msg = "Continue with these $changes element changes?";
     $msg = qq("$msg") if MSWIN;
     exit 0 if system(qw(clearprompt proceed -pro), $msg);
 }
@@ -272,8 +291,8 @@ if ($opt{label}) {
 ## Workaround for a CC problem - xml files may have binary data.
 ## But in CC 4.1 there's a new "xml" eltype that *should* fix it.
 ## $sync->eltypemap('\.xml$' => 'compressed_file');
-# Prompt the user before checkin if -yes not in use.
-if (!$opt{yes} && !$opt{ci}) {
+# Prompt the user before checkin if -ci not in use.
+if (! $opt{ci}) {
     my $b = MSWIN ? 'Cancel' : 'Abort';
     my $msg = "Check in all changes? (No to leave checked out, $b to unco all)";
     $msg = qq("$msg") if MSWIN;
@@ -289,7 +308,7 @@ $sync->err_handler(\$rc);
 # Now check in the changes: one at a time if -cr, otherwise
 # all at once.
 $sync->no_cr unless $opt{cr};
-$sync->checkin if $opt{ci} || $opt{cr} || $opt{yes};
+$sync->checkin if $opt{ci} || $opt{cr};
 
 exit $rc;
 
@@ -307,10 +326,10 @@ Take all files located under /tmp/newcode/xxx, remove the leading
 "/tmp/newcode", from each of their pathnames, and place the remaining
 relative paths under "/vobs_tps/xxx".
 
-  synctree -cr -yes -sbase /vobs/hpux/bin -dbase /vobs_rel/hpux/bin
+  synctree -cr -yes -ci -sbase /vobs/hpux/bin -dbase /vobs_rel/hpux/bin
 
 Sync all files under "/vobs_rel/hpux/bin" with those in
-"/vobs/hpux/bin", making sure to preserve their CR's. Suppress
+"/vobs/hpux/bin", making sure to preserve their CR's. Suppress all
 interactive prompting.
 
   synctree -sb /A/B -db /X/Y -map /A/B/foo /X/Y/bar /A/B/here /X/Y/there
@@ -350,18 +369,19 @@ used as the default.
 
 File paths may be given as relative or absolute. Destination paths are
 determined as follows: all source filenames are first turned into
-absolute paths if necessary, then the path given with the I<-sbase>
+absolute paths as necessary, then the path given with the I<-sbase>
 parameter is removed and replaced with that of I<-dbase> to produce the
 destination pathname (but see FILE MAPPING below).
 
-Symbolic links are supported, even on Windows.  Note that the text of
-the link is transported I<verbatim> from source area to dest area; thus
-relative symlinks may no longer resolve in the destination area.
+ClearCase symbolic links are supported, even on Windows.  Note that the
+text of the link is transported I<verbatim> from source area to dest
+area; thus relative symlinks may no longer resolve in the destination
+area.
 
 Consider using the I<-n> flag the first time you use this on a valued
 VOB, even though nothing irreversible is done (e.g.  no I<rmelem>,
 I<rmbranch>, I<rmver>, I<rmtype>, etc.).  And by the same token use
-I<-ci> and I<-yes> with care.
+I<-yes> and I<-ci> with care.
 
 =head1 OPTIONS
 
@@ -376,23 +396,25 @@ summary.
 By default, upon encountering a ClearCase error synctree will attempt
 to return to the initial state by undoing all checkouts etc. The
 I<-stop> flag will cause it to exit immediately leaving the current
-state intact, while I<-force> will cause it to blunder onward ignoring
+state intact while I<-force> will cause it to blunder onward, ignoring
 errors. However, even with I<-force> a nonzero status is returned if
 errors are encountered.
 
 =item * I<-no, -yes, -ci>
 
 The I<-no> flag causes synctree to report what it would do and exit
-without making any changes, I<-yes> suppresses all prompts, and I<-ci>
-makes it check in all changes without asking.
+without making any changes, I<-yes> suppresses all prompts except for
+the C<check in changes?> prompt, and I<-ci> suppresses that one. The
+default behavior is to prompt before making changes. To suppress all
+prompting you must use both I<-yes> and I<-ci>.
 
 =item * I<-label, -lbmods>
 
 The I<-label> option let you specify a label to be applied before
 finishing. By default it will label recursively from the I<-dbase> area
 down, as well as all parent directories upward to the vob root.
-If the I<-lbmods> flag is used in conjunction, only modified elements
-will be labeled.
+However, if the I<-lbmods> flag is used in conjunction only modified
+elements will be labeled.
 
 =item * I<-reuse>
 
@@ -401,7 +423,7 @@ created again in run #3, you may end up with multiple elements with
 the same name. This situation is known as an I<evil twin>. The
 I<-reuse> flag can avoid this; before making a new element it
 searches the directory's version tree looking for a prior element
-of the same name. If found, it will line the old element back into
+of the same name. If found, it will link the old element back into
 the current version of the directory, then (if the contents differ)
 check it out and replace the contents with those of the source
 file.
@@ -439,12 +461,12 @@ I<-flist>, filtering it is your own responsibility.
 Synctree has lots of support for remapping filenames. The options can
 be pretty confusing and thus deserve special treatment here.
 
-Filename mapping is enabled with the B<-map> flag.  Without
-I<-map>, a list of files provided on the command line is interpreted as
-a set of I<from> files; their I<to> paths are derived via
-I<s/^sbase/dbase/> and thus the file basenames do not change. However,
-in the presence of I<-map> the @ARGV is instead interpreted as a hash
-alternating B<from> and B<to> names.  Thus
+Filename mapping is enabled with the B<-map> flag.  Without I<-map>, a
+list of files provided on the command line is interpreted as a set of
+I<from> files; their I<to> paths are derived via I<s/^sbase/dbase/> and
+thus the file basenames do not change.  In the presence of I<-map> the
+@ARGV is instead interpreted as a hash alternating B<from> and B<to>
+names.  Thus
 
   synctree -sb /etc -db /vobs_st/etc /etc/passwd /etc/group
 
@@ -469,8 +491,8 @@ thus:
 =head1 COMPARISONS
 
 Synctree is comparable to I<citree> and I<clearfsimport>. It is similar
-to citree but runs on both Windows and UNIX. It has the following
-advantages over clearfsimport:
+to citree but has more options and runs on both Windows and UNIX. It
+has the following advantages over clearfsimport:
 
 =over 4
 
@@ -481,8 +503,8 @@ first supported in CC 4.2.
 
 =item *
 
-Synctree handles C<MVFS->MVFS> transfers while preserving CR's whereas
-clearfsimport treats the source as flat files.
+Synctree is capable of preserving CR's during C<MVFS->MVFS> transfers
+whereas clearfsimport always treats the source area as flat files.
 
 =item *
 
@@ -491,8 +513,8 @@ option for limiting the set of files to transfer.
 
 =item *
 
-Synctree is built on a published API (B<ClearCase::SyncTree>) which may
-aid custom tool development in Perl whereas clearfsimport is a
+Synctree is built on a documented API (B<ClearCase::SyncTree>) which
+may aid custom tool development in Perl whereas clearfsimport is a
 command-line interface only.
 
 =item *
@@ -501,14 +523,14 @@ Synctree has support for I<element retention>. I.e. if an element is
 added in one pass and removed (rmnamed) in a subsequent pass, and if a
 third pass would make another element of the same name, synctree can
 optionally (I<-reuse>) make a link to the existing file instead of
-making a new element that may be considered an "evil twin".
+creating a new element which might be considered an "evil twin".
 
 =back
 
 However, unless you need one of the above features the supported,
 integrated solution (B<clearfsimport>) is generally preferable. And of
-course all of these features I<may> eventually be supported by
-clearfsimport.
+course some of these features I<may> eventually be supported by
+clearfsimport; check current documentation.
 
 =head1 BUGS
 
@@ -540,7 +562,7 @@ the Argv module on which I<synctree> is built).
 
 =head1 AUTHOR
 
-David Boyce <dsb@boyski.com>
+David Boyce <dsbperl@cleartool.com>
 
 =head1 COPYRIGHT
 
@@ -559,8 +581,8 @@ to leave the interface alone.
 
 The guts of this program are in the ClearCase::SyncTree module, which
 is known to work on Solaris 2.6-7 and Windows NT 4.0SP3-5, and with
-perl 5.004_04 and 5.6. The I<synctree> wrapper program per se has had
-only rudimentary testing on Windows but appears to work fine there.
+perl 5.004_04 and 5.6. I would expect it to work on other Unix platforms
+too but have no way to find out.
 
 =head1 SEE ALSO
 

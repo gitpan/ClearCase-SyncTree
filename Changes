@@ -100,3 +100,11 @@ Revision history for Perl extension ClearCase::SyncTree.
 	  compare sizes before invoking File::Compare::cmp(). This
 	  is not only faster, it stops ClearCase from having to
 	  construct cleartext for every file just to compare it.
+
+0.29 Thu Dec 13 15:27:23 EST 2001
+	- SEMANTIC CHANGE: the -yes flag is now less powerful; it does
+	  not suppress the checkin prompt. As of this version you must
+	  use -yes and -ci together to suppress all prompts.
+
+0.30 Tue Jul 22 10:33:12 EDT 2003
+	- Fixed contact data.

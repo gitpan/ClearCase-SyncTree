@@ -20,8 +20,8 @@ $final += printok(1);
 print <<EOF;
 
 It's impractical to do real tests at install time since (a) a great
-deal depends on your local view/VOB configuration and (b) it makes
-permanent changes to a local VOB, so we just test that it loads ok.
+deal depends on your local view/VOB configuration and (b) it would
+make permanent changes to a local VOB. So we just test that it loads.
 EOF
 
 exit $final;

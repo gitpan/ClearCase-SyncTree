@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.27';
+$VERSION = '0.30';
 
 require 5.004;
 
@@ -16,7 +16,7 @@ use File::Spec 0.82;
 
 use ClearCase::Argv 1.00;
 
-use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i;
+use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i ? 1 : 0;
 
 my $lext = '.=lnk=';	# special extension for pseudo-symlinks
 
@@ -465,6 +465,18 @@ sub analyze {
 	(my $relpath = $path) =~ s%^$dbase\W?%%;
 	if (-d $path) {
 	    $dirs{$path} = 1;
+=pod
+# contribution by unagler 011212, turned off for now (breaks -rm)
+	    # check if directory must be removed from dbase
+	    my $srcpath = $path;
+	    $srcpath =~ s,$dbase,,;
+	    $srcpath = $sbase.$srcpath;
+	    #print "CHECK: $srcpath\n";
+	    if (! -d $srcpath) {
+	        # directory does not exist in sbase, it must be removed from dbase
+	        $files{$relpath} = $path;
+	    }
+=cut
 	} elsif (-f $path) {
 	    $files{$relpath} = $path;
 	}
@@ -490,7 +502,7 @@ sub preview {
     my($adds, $mods, $subs) = (0, 0, 0);
     if ($self->{ST_ADD}) {
 	$adds = keys %{$self->{ST_ADD}};
-	print "Adding $adds files:\n";
+	print "Adding $adds elements:\n";
 	for (sort keys %{$self->{ST_ADD}}) {
 	    printf "$indent%s +=>\n\t%s\n", $self->{ST_ADD}->{$_}->{src},
 			 $self->{ST_ADD}->{$_}->{dst};
@@ -498,7 +510,7 @@ sub preview {
     }
     if ($self->{ST_MOD}) {
 	$mods = keys %{$self->{ST_MOD}};
-	printf "Modifying $mods files:\n";
+	print "Modifying $mods elements:\n";
 	for (sort keys %{$self->{ST_MOD}}) {
 	    printf "$indent%s ==>\n\t%s\n", $self->{ST_MOD}->{$_}->{src},
 			 $self->{ST_MOD}->{$_}->{dst};
@@ -507,13 +519,13 @@ sub preview {
     if ($rm && $self->{ST_SUB}) {
 	my @exfiles = @{$self->{ST_SUB}->{exfiles}};
 	$subs = @exfiles;
-	print "Subtracting $subs files:\n" if $subs;
+	print "Subtracting $subs elements:\n" if $subs;
 	for (@exfiles) {
 	    printf "$indent%s\n", $_;
 	}
     }
     my $total = $adds + $mods + $subs;
-    print "File changes: add=$adds modify=$mods subtract=$subs\n";
+    print "Element changes: add=$adds modify=$mods subtract=$subs\n";
     return $total;
 }
 
@@ -587,7 +599,7 @@ sub add {
 	# back into the new dir (still as view-private files).
 	my $tmpdir = "$cand.$$.keep.d";
 	if (!rename($cand, $tmpdir)) {
-	    warn "$0: Error: $cand: $!\n";
+	    warn "$0: Error: can't rename '$cand' to '$tmpdir': $!\n";
 	    $ct->fail;
 	    next;
 	}
@@ -725,13 +737,17 @@ sub subtract {
     for my $dad (map {dirname($_)} @exfiles) {
 	$ct->argv('co', $r_cmnt, $dad)->system if !$checkedout{$dad}++;
     }
-    $ct->argv('rm', $r_cmnt, @exfiles)->system if @exfiles;
+    $ct->argv('rmname', $r_cmnt, @exfiles)->system if @exfiles;
     my @exdirs;
     while (1) {
 	for (sort {$b cmp $a} keys %dirs) {
 	    if (opendir(DIR, $_)) {
 		my @entries = readdir DIR;
 		closedir(DIR);
+=pod # unagler 011212
+# contribution by unagler 011212, turned off for now (breaks -rm)
+		next;	# keep also empty directories
+=cut # unagler 011212 end
 		next if @entries > 2;
 		push(@exdirs, $_);
 		delete $dirs{$_};
@@ -744,7 +760,7 @@ sub subtract {
 	if (my @co = $ct->argv('lsco', [qw(-s -cvi -d)], @exdirs)->qx) {
 	    $ct->argv('ci', $r_cmnt, @co)->system;
 	}
-	$ct->argv('rm', $r_cmnt, @exdirs)->system;
+	$ct->argv('rmname', $r_cmnt, @exdirs)->system;
 	@exdirs = ();
     }
 }
@@ -971,8 +987,8 @@ relativized as described above and deposited in B<dstbase>, or they can
 be specified via B<srcmap> which allows the destination file to have a
 different name from the source.
 
-I<srclist> takes a list of input filenames. These may be absolute or relative;
-they will be canonicalized and then relativized internally.
+I<srclist> takes a list of input filenames. These may be absolute or
+relative; they will be canonicalized internally.
 
 I<srcmap> is similar but takes a hash mapping input filenames to
 their destination counterparts.
@@ -1143,8 +1159,45 @@ The -E<gt>reuse method (see) may be used to prevent evil twins.
 
 =item *
 
-I have not tested SyncTree in snapshot views and would not expect it to
-work out of the box, though I did try to code for the possibility.
+I have not tested SyncTree in snapshot views and would not expect that
+to work out of the box, though I did make some effort to code for the
+possibility.
+
+=back
+
+Following items are from Uwe Nagler of Lucent, unverified:
+
+=over 4
+
+=item * Mode changes of files should be supported.
+
+Currently:  If ONLY the protections of an existing file (in source and
+VOB destination ) is changed in the source then this change is NOT
+transferred into the VOB destination.  E.g. If a file later gets
+"execute" permissions (scripts) in the source then the file in VOB
+destination keeps the old permissions.
+
+=item * File type changes should be supported
+
+Currently:  If the type of an existing file (in source and VOB
+destination) is changed in the source (ASCII->Binary) then the change
+in VOB destination fails because of a ClearCase error (wrong file
+type).
+
+=item * Cleanup Bug #1
+
+Wrong cleanup after detection of own checkouts below VOB destination:
+If the current view has a checkout at the same branch where synctree
+wants to checkout then (a) the whole synctree run is marked as failed
+(which is OK) but (b) the cleanup performs a uncheckout and the user
+will loose the data of its checkout.
+
+=item * Cleanup Bug #2
+
+Wrong cleanup after detection other checkouts below VOB destination:
+If an other view has a checkout at the same branch where synctree wants
+to checkout then (a) the whole synctree run is NOT marked as failed (b)
+only this element is not updated
 
 =back
 
@@ -1154,15 +1207,16 @@ Based on code originally written by Paul D. Smith
 <pausmith@nortelnetworks.com>.  Paul's version was based on the Bourne
 shell script 'citree' delivered as sample code with ClearCase.
 
-Rewritten for Unix/Win32 portability by David Boyce <dsb@boyski.com>
-in 8/1999, then reorganized into a module in 1/2000. This module no
-longer bears the slightest resemblance to any version of citree.
+Rewritten for Unix/Win32 portability by David Boyce
+<dsbperl@cleartool.com> in 8/1999, then reorganized into a module in
+1/2000. This module no longer bears the slightest resemblance to any
+version of citree.
 
 =head1 COPYRIGHT
 
 Copyright 1997,1998 Paul D. Smith and Bay Networks, Inc.
 
-Copyright 1999-2001 David Boyce (dsb@boyski.com).
+Copyright 1999-2001 David Boyce (dsbperl@cleartool.com).
 
 This script is distributed under the terms of the GNU General Public License.
 You can get a copy via ftp://ftp.gnu.org/pub/gnu/ or its many mirrors.
