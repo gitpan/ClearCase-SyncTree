@@ -147,3 +147,8 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.37 Fri Jun 11 14:56:36 EDT 2004
 	- Fixed bug involving bad exit statuses reported by Leo Sager.
+
+0.38 Sat Jun 19 13:37:31 EDT 2004
+	- Fixed bug with explicit -flist option on Windows involving
+	  incorrect canoncalization of paths (/-vs\). Fix supplied
+	  by David Darby.

@@ -186,11 +186,11 @@ if ($opt{flist}) {
 	s/\s+$//;
 	next if ! $_ || /^#/;
 	my($from, $to) = split /\s*=>\s*/;
-	ClearCase::SyncTree->canonicalize($opt{sbase}, $from);
 	if (! $to) {
 	    $to = $from;
 	    $to =~ s%^$opt{sbase}/%% if $to !~ m%^$opt{dbase}%;
 	}
+	ClearCase::SyncTree->canonicalize($opt{sbase}, $from);
 	ClearCase::SyncTree->canonicalize($opt{dbase}, $to);
 	$to = $sync->normalize($to);
 	die "$prog: Error: $from: No such file or directory\n" unless -e $from;
