@@ -56,3 +56,7 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.20 Tue Feb 27 14:44:25 EST 2001
 	- Fixed bug in synctree: clearprompt result must be >>8.
+
+0.21 Fri Jun 29 19:32:28 EDT 2001
+	- Fixes donated from fmr.com. Not tested on Windows (no
+	  Windows/CC place to test right now).

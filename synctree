@@ -116,9 +116,13 @@ if ($opt{flist}) {
 	s/^\s+//;
 	s/\s+$//;
 	next if ! $_ || /^#/;
-	my($from, $to) = split /\s*=[=>]\s*/;
+	my($from, $to) = split /\s*=>\s*/;
+	$from = File::Spec->canonpath(join('/', $opt{sbase}, $from))
+				if ! File::Spec->file_name_is_absolute($from);
+	$to = File::Spec->canonpath(join('/', $opt{dbase}, $to))
+			     if $to && ! File::Spec->file_name_is_absolute($to);
 	next if -d $from;
-	die "$prog: Error: $_: No such file or directory\n" unless -e;
+	die "$prog: Error: $from: No such file or directory\n" unless -e $from;
 	$transfer{$from} = $to || $from;
     }
     close(FLIST);
@@ -191,8 +195,9 @@ $sync->subtract if $opt{rmname};
 $sync->label($opt{lbtype}) if $opt{lbtype};
 # Undo all work and exit if we're just going for a test drive.
 $sync->fail(0) if $opt{testdrive};
-# Workaround for a CC problem - xml files may have binary data.
-$sync->eltypemap('\.xml$' => 'compressed_file');
+## Workaround for a CC problem - xml files may have binary data.
+## But in CC 4.1 there's a new "xml" eltype that *should* fix it.
+## $sync->eltypemap('\.xml$' => 'compressed_file');
 # Get rid of any exception handler before starting the checkin
 # process, as once a checkin succeeds there's no going back.
 $sync->err_handler(0);
@@ -254,15 +259,15 @@ in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-rmname> flag
 will cause this removal to happen as well.
 
 This script must run in a view context; the branching behavior of any
-checkouts it makes will be governed by the view's config spec.  Also,
-the directory named by the I<-dbase> flag must exist and lie under a
-mounted VOB tag.
+checkouts it performs will be governed by the view's config spec.
+Also, the directory named by the I<-dbase> flag must exist and lie
+under a mounted VOB tag.
 
 The list of source files to operate on may be provided with the
 I<-flist> option or it may come from C<@ARGV>. Any directories
 encountered on C<@ARGV> will be traversed recursively. If no
-source-file-list is provided at all, the directory specified with
-I<-sbase> is treated as the default.
+source-file-list is provided, the directory specified with I<-sbase> is
+used as the default.
 
 File paths may be given as relative or absolute; all filenames are
 turned into absolute paths, then the path given with the I<-sbase>
@@ -281,14 +286,14 @@ token use I<-ci> and I<-yes> with care.
 =head1 FILE MAPPING
 
 Synctree has lots of support for remapping filenames. The options can
-be pretty confusing and thus deserve special treatment.
+be pretty confusing and thus deserve special treatment here.
 
-All mapping is enabled with the B<-map> flag.  Without I<-map>, a list
-of files provided on the command line is interpreted as a set of
-I<from> files; their I<to> paths are derived via I<s/^sbase/dbase/> and
-thus the file basenames do not change. However, in the presence of
-I<-map> the @ARGV is instead interpreted as a hash alternating B<from>
-and B<to> names.  Thus
+All filename mapping is enabled with the B<-map> flag.  Without
+I<-map>, a list of files provided on the command line is interpreted as
+a set of I<from> files; their I<to> paths are derived via
+I<s/^sbase/dbase/> and thus the file basenames do not change. However,
+in the presence of I<-map> the @ARGV is instead interpreted as a hash
+alternating B<from> and B<to> names.  Thus
 
   synctree -sbase /etc -dbase /vobs_etc /etc/passwd /etc/group
 
@@ -301,8 +306,9 @@ Alternatively the mapping may be specified with a literal B<=E<gt>>:
 
   synctree -sb /etc -db /vobs_etc -map '/etc/passwd => /vobs_etc/foo' ...
 
-but note that this must be quoted. The I<=E<gt>> style is also allowed
-in files specified via B<-flist>, thus:
+but note that this must be quoted against shell expansion. The
+I<=E<gt>> style is also allowed in files specified via B<-flist>,
+thus:
 
   synctree -sb /etc -db /vobs_etc -map -flist - << EOF
   /etc/passwd => /vobs_etc/foo
@@ -319,12 +325,13 @@ advantages over clearfsimport:
 
 =item *
 
-Synctree works with ClearCase versions prior to 4.1.
+Synctree works with all ClearCase versions whereas clearfsimport is
+first supported in CC 4.2.
 
 =item *
 
 Synctree handles C<MVFS->MVFS> transfers while preserving CR's whereas
-clearfsimport does C<flat_file_system->MVFS> only.
+clearfsimport treats the source as flat files.
 
 =item *
 
@@ -339,11 +346,11 @@ interface only.
 
 =item *
 
-Synctree may at some point (but does not yet) have support for
-I<element retention>. I.e. if an element is added in one pass and
-removed (rmnamed) in a subsequent pass, and if a third pass would make
-another element of the same name, synctree could optionally make a link
-to the existing file instead of creating what might be a "evil twin".
+Synctree has experimental support for I<element retention>. I.e. if an
+element is added in one pass and removed (rmnamed) in a subsequent
+pass, and if a third pass would make another element of the same name,
+synctree can optionally (I<-reuse>) make a link to the existing file
+instead of making a new element that may be considered an "evil twin".
 
 =back
 
