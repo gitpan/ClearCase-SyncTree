@@ -33,4 +33,12 @@ Revision history for Perl extension ClearCase::SyncTree.
 	  overenthusiastic cleanup.
 
 0.15 Thu Oct 12 11:47:06 EDT 2000
-	- Fixed a Windows/clearprompt quoting error.
+	- Fixed a Windows/clearprompt quoting error reported
+	  by James Anderson.
+
+0.16 Mon Oct 23 22:33:12 EDT 2000
+	- Fix bugs reported by Rowena Sandoval (MSWIN drive letters and \)
+	- Added cmp_func method as supplied by Greg Kurz.
+
+0.17 Tue Oct 24 22:13:45 EDT 2000
+	- Added -map and -nprotect flags to synctree script.

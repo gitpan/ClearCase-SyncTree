@@ -1,4 +1,6 @@
-#!/usr/local/bin/perl
+:
+eval 'exec /tools/$MACHINE/bin/perl -S $0 ${1+"$@"}'
+    if 0;
 
 use ClearCase::Argv 0.23;
 use ClearCase::SyncTree 0.05;
@@ -27,6 +29,7 @@ Flags:
    -dbase <vob-dir>	The destination base directory
    -sbase <dir>		The source base directory
    -flist <file>	A file containing a list of files or "-" for stdin
+   -map			Interpret \@ARGV as a hash mapping src => dest
    -force		Continue despite errors
    -ci			Check in changes (default is to leave co'ed)
    -cr			Check in in such a way as to preserve CR's (slower)
@@ -37,8 +40,9 @@ Flags:
    -n			Exit after showing a preview.
    -yes			Perform all work without asking first
    -testdrive		Do the work, then unco it all and exit
+   -nprotect		Turn off "cleartool protect -chmod" stage
    -Narrow [!]<re>	Limit files found to those which match /re/
-   -/dbg=1		Verbose: show all cleartool commands
+   -/dbg=1		Verbose mode: show cleartool cmds as they run
 Note:
     All flags may be abbreviated to their shortest unique name.
 Examples:
@@ -49,7 +53,7 @@ EOF
     exit $rc;
 }
 
-my @sources;
+my %transfer;
 my %opt;
 
 {
@@ -64,7 +68,7 @@ my %opt;
 	    return if $skip && $path =~ /$skip/;
 	}
 	if (-f $_ || -l $_) {
-	    push(@sources, $path);
+	    $transfer{$path} = $path;
 	} elsif (-d _) {
 	    if ($_ eq 'lost+found') {
 		$File::Find::prune = 1;
@@ -82,13 +86,14 @@ ClearCase::Argv->attropts;
 ClearCase::Argv->inpathnorm(0);
 
 local $Getopt::Long::ignorecase = 0;  # global override for dumb default
-# A little hack to parse -c <cmnt> independently of -ci etc.
+# A little hack to allow use of flag abbreviations without ambiguity
+# warnings, e.g. parse -c <cmnt> independently of -ci etc.
 {
     local $Getopt::Long::autoabbrev = 0;
     local $Getopt::Long::passthrough = 1;
-    GetOptions(\%opt, 'comment|c=s') || exit 1;
+    GetOptions(\%opt, qw(comment|c=s nprotect)) || exit 1;
 }
-GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s
+GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s map
 		     Narrow=s@
 		     Add Modify Rm
 		     help ci cr ctime force preview|n ok rm testdrive yes
@@ -103,16 +108,32 @@ for (@opt{qw(dbase sbase)}) {
 }
 
 if ($opt{flist}) {
+    usage("-flist and -map are mutually exclusive") if $opt{map};
     open(FLIST, $opt{flist}) || die "$prog: Error: $opt{flist}: $!";
-    @sources = <FLIST>;
-    chomp @sources;
-    @sources = grep -f, @sources;
+    while(<FLIST>) {
+	chomp;
+	s/^\s+//;
+	s/\s+$//;
+	my($from, $to) = split /\s*=>\s*/;
+	next if -d $from;
+	$transfer{$from} = $to || $from;
+    }
     close(FLIST);
 }
 
-push(@ARGV, $opt{sbase}) if !@ARGV && !@sources;
-for my $pname (@ARGV) {
-    find(\&wanted, $pname);
+if ($opt{map}) {
+    while (@ARGV) {
+	my($from, $to) = split /\s*=>\s*/, shift;
+	$to ||= shift;
+	die "$prog: Error: odd number of files specified with -map\n" if !$to;
+	next if -d $from;
+	$transfer{$from} = $to;
+    }
+} else {
+    push(@ARGV, $opt{sbase}) if !@ARGV && !%transfer;
+    for my $pname (@ARGV) {
+	find(\&wanted, $pname);
+    }
 }
 
 #########################################################################
@@ -122,6 +143,8 @@ for my $pname (@ARGV) {
 
 # Create a 'synctree' object.
 my $sync = ClearCase::SyncTree->new;
+# Allow the protect default to be overridden.
+$sync->protect(0) if $opt{nprotect};
 # Turn off the default exception handler if -force.
 $sync->err_handler(0) if $opt{force};
 # Specify the comment to attach to any changes.
@@ -133,7 +156,7 @@ $sync->srcbase($opt{sbase});
 # Tell it where they're going to ...
 $sync->dstbase($opt{dbase});
 # Supply the list of required files.
-$sync->srclist(@sources);
+$sync->srcmap(%transfer);
 # Compare src and dest lists and figure out what to do.
 $sync->analyze;
 # If -preview, give a preview and exit. Ask for OK to proceed unless -yes.
@@ -144,7 +167,7 @@ if (!$opt{yes} || $opt{preview}) {
 	warn "Warning: cannot predict -rm behavior\n" if $opt{rm};
 	exit 0;
     }
-    my $msg = "Continue with these $changes changes?";
+    my $msg = "Continue with these $changes file changes?";
     $msg = qq("$msg") if MSWIN;
     exit 0 if system(qw(clearprompt proceed -pro), $msg);
 }
@@ -196,6 +219,11 @@ relative paths under "/vobs_tps/xxx". Check in when done.]
 [Sync up all files under "/vobs_rel/hpux/bin" with those in
 "/vobs/hpux/bin", making sure to preserve their CR's.]
 
+  synctree -sb /A/B -db /X/Y -map /A/B/foo /X/Y/bar /A/B/here /X/Y/there
+
+Take 'foo' from directory /A/B and check it in as 'bar' in /X/Y.  Same
+for 'here' and 'there'.
+
 =head1 DESCRIPTION
 
 Brings a VOB area into alignment with a specified set of files from
@@ -210,11 +238,11 @@ The default operation is to mkelem all files which exist in
 I<E<lt>srcE<gt>> but not in I<E<lt>destE<gt>>, modify any files which
 exist in both but differ, but B<not> to remove files which are present
 in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-rm> flag will
-cause this removal to happen too.
+cause this removal to happen as well.
 
-This script must run in a view context; the branching rules of any
-checkouts it makes will be governed by that config spec.  Also, the
-directory named by the I<-dbase> flag must exist and lie under a
+This script must run in a view context; the branching behavior of any
+checkouts it makes will be governed by the view's config spec.  Also,
+the directory named by the I<-dbase> flag must exist and lie under a
 mounted VOB tag.
 
 The list of source files to operate on may be provided with the
@@ -236,6 +264,37 @@ Consider using the I<-n> or I<-testdrive> flags the first time you use
 this on a valued VOB, even though nothing irreversible is done (e.g.
 no I<rmelem>, I<rmbranch>, I<rmver>, I<rmtype>, etc.).  And by the same
 token use I<-ci> and I<-yes> with care.
+
+=head1 FILE MAPPING
+
+Synctree has lots of support for remapping filenames. The options can
+be pretty confusing and thus deserve special treatment.
+
+All mapping is enabled with the B<-map> flag.  Without I<-map>, a list
+of files provided on the command line is interpreted as a set of
+I<from> files; their I<to> paths are derived via I<s/^sbase/dbase/> and
+thus the file basenames do not change. However, in the presence of
+I<-map> the @ARGV is instead interpreted as a hash alternating B<from>
+and B<to> names.  Thus
+
+  synctree -sbase /etc -dbase /vobs_etc /etc/passwd /etc/group
+
+would make two files under /vobs_etc called passwd and group, whereas
+
+  synctree -sbase /etc -dbase /vobs_etc -map /etc/passwd /vobs_etc/foo
+
+would create one file (/vobs_etc/foo) which is a copy of /etc/passwd.
+Alternatively the mapping may be specified with a literal B<=E<gt>>:
+
+  synctree -sb /etc -db /vobs_etc -map '/etc/passwd => /vobs_etc/foo' ...
+
+but note that this must be quoted. The I<=E<gt>> style is also allowed
+in files specified via B<-flist>, thus:
+
+  synctree -sb /etc -db /vobs_etc -map -flist - << EOF
+  /etc/passwd => /vobs_etc/foo
+  /etc/group  => /vobs_etc/bar
+  EOF
 
 =head1 DEBUGGING
 

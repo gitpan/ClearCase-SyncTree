@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.15';
+$VERSION = '0.17';
 
 require 5.004;
 
@@ -42,6 +42,8 @@ sub new {
     $self->ct;
     # By default we'll call SyncTree->fail on any cleartool error.
     $self->err_handler($self, 'fail');
+    ## TAKE THIS 'shift' FEATURE OUT SOON ...
+    $self->cmp_func(@_ ? shift : \&File::Compare::compare);
     return $self;
 }
 
@@ -141,6 +143,7 @@ sub _mkbase {
 			! $ct->argv('desc', ['-s'], "$mbase@@")->system;
 	    $mbase = dirname($mbase);
 	}
+	$mbase =~ s%^[a-z]:%%i if MSWIN;
 	$self->{ST_MKBASE} = $mbase;
     }
     return $self->{ST_MKBASE};
@@ -148,7 +151,10 @@ sub _mkbase {
 
 sub dstvob {
     my $self = shift;
-    $self->{ST_DSTVOB} = shift if @_;
+    if (@_) {
+	$self->{ST_DSTVOB} = shift;
+	$self->{ST_DSTVOB} =~ s%\\%/%g;
+    }
     return $self->{ST_DSTVOB};
 }
 
@@ -168,6 +174,12 @@ sub no_cmp {
     my $self = shift;
     $self->{ST_NO_CMP} = 1 if $_[0] || !defined(wantarray);
     return $self->{ST_NO_CMP} || 0;
+}
+
+sub cmp_func {
+    my $self = shift;
+    $self->{ST_CMP_FUNC} = shift if @_;
+    return $self->{ST_CMP_FUNC};
 }
 
 sub srclist {
@@ -239,6 +251,7 @@ sub analyze {
     }
     delete $self->{ST_ADD};
     delete $self->{ST_MOD};
+    my $compare = $self->cmp_func;
     for (sort keys %{$self->{ST_SRCMAP}}) {
 	next if $self->{ST_SRCMAP}->{$_}->{type} &&
 		$self->{ST_SRCMAP}->{$_}->{type} !~ /$type/;
@@ -255,8 +268,8 @@ sub analyze {
 		my $dtxt = readlink $dst;
 		$update = $self->no_cmp || ($stxt ne $dtxt);
 	    } elsif (! -l $src && ! -l $dst) {
-		$update = $self->no_cmp || compare($src, $dst);
-		warn "Warning: error comparing $src vs $dst" if $update < 0;
+		$update = $self->no_cmp || &$compare($src, $dst);
+		die "Error: failed comparing $src vs $dst: $!" if $update < 0;
 	    } else {
 		$update = 1;
 	    }
@@ -316,8 +329,9 @@ sub add {
 	    $ct->fail;
 	}
     }
-    my @candidates = sort grep m%^$mbase%,
-			$ct->argv('lsp', [qw(-oth -s -inv), $mbase])->qx;
+    my @candidates = $ct->argv('lsp', [qw(-oth -s -inv), $mbase])->qx;
+    for (@candidates) { s%\\%/%g }
+    @candidates = sort grep m%^$mbase%, @candidates;
     return if !@candidates;
     # We'll be separating the elements-to-be into files and directories.
     my(@files, @symlinks, %dirs);
@@ -711,7 +725,7 @@ different name from the source.
 I<srclist> takes a list of input filenames. These may be absolute or relative;
 they will be canonicalized and then relativized internally.
 
-I<srcmap> is similar but takes a hash which maps input filenames to
+I<srcmap> is similar but takes a hash mapping input filenames to
 their destination counterparts.
 
 Examples:
@@ -809,6 +823,16 @@ ci"> operation, which is faster but loses CR's.
 
 This attribute causes all files which exist in both src and dest areas
 to be considered modified by the I<analyze> method.
+
+=item * -E<gt>cmp_func
+
+Sets or returns the coderef that's used to compare the source and
+destination files. The default is I<File::Compare::compare()> but can be
+modifed by passing in a ref to your preferred function, like so:
+
+    $obj->cmp_func(\&my_compare_function);
+
+A replacement function should set C<$!> on failure.
 
 =item * -E<gt>comment
 
