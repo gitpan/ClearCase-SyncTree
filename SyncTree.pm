@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.25';
+$VERSION = '0.26';
 
 require 5.004;
 
@@ -203,7 +203,7 @@ sub srcbase {
 	$sbase =~ s%\\%/%g;	# rel2abs forces native (\) separator
 	$sbase =~ s%/\.$%%;	# workaround for bug in File::Spec 0.82
 	# File::Spec::Win32::rel2abs leaves trailing / on drive letter root.
-	$sbase =~ s%/*$%%;
+	$sbase =~ s%/*$%% if $sbase ne '/';
 	$self->{ST_SRCBASE} = $sbase;
     }
     return $self->{ST_SRCBASE};
@@ -752,7 +752,7 @@ sub label {
     my $ctbool = $ctq->clone({-autofail=>0, -stderr=>0});
     my $locked;
     if ($ctbool->lstype(['-s'], "lbtype:$lbtype\@$dbase")->system) {
-	$ct->mklbtype(['-nc'], "lbtype:$lbtype\@$dbase")->system;
+	$ct->mklbtype($self->comment, "lbtype:$lbtype\@$dbase")->system;
     } else {
 	$locked = $self->clone_ct->lslock(['-s'], "lbtype:$lbtype\@$dbase")->qx;
 	$ct->unlock("lbtype:$lbtype\@$dbase")->system if $locked;
@@ -762,7 +762,7 @@ sub label {
 	    $ctq->mklabel([qw(-nc -rep), $lbtype], @mods)->system;
 	}
     } else {
-	$ctq->mklabel([qw(-rep -rec -nc), $lbtype], $dbase)->system;
+	$ctq->mklabel([qw(-nc -rep -rec), $lbtype], $dbase)->system;
 	# Last, label the ancestors of the destination back to the vob tag.
 	my $dvob = $self->normalize($self->dstvob);
 	my($dad, @ancestors);
@@ -781,6 +781,7 @@ sub checkin {
     my $mbase = $self->_mkbase;
     my $dad = dirname($mbase);
     my @ptime = qw(-pti) unless $self->ctime;
+    my @cmnt = @{$self->comment};
     my $ct = $self->clone_ct;
     # If special eltypes are registered, chtype them here.
     if (my %emap = $self->eltypemap) {
@@ -788,7 +789,7 @@ sub checkin {
 	    my @chtypes = grep {/$re/} map {$self->{ST_ADD}->{$_}->{dst}}
 				       keys %{$self->{ST_ADD}};
 	    next unless @chtypes;
-	    $ct->argv('chtype', [qw(-nc -f), $emap{$re}], @chtypes)->system;
+	    $ct->chtype([@cmnt, '-f', $emap{$re}], @chtypes)->system;
 	}
     }
     # Do one-by-one ci's with -from (to preserve CR's) unless
@@ -797,7 +798,7 @@ sub checkin {
 	for (keys %{$self->{ST_CI_FROM}}) {
 	    my $src = $self->{ST_CI_FROM}->{$_}->{src};
 	    my $dst = $self->{ST_CI_FROM}->{$_}->{dst};
-	    $ct->ci([@ptime, qw(-nc -ide -rm -from), $src], $dst)->system;
+	    $ct->ci([@ptime, @cmnt, qw(-ide -rm -from), $src], $dst)->system;
 	}
     }
     # Check in anything not handled above.
@@ -805,7 +806,7 @@ sub checkin {
     my $dv = $self->dstview;
     my @todo = grep {m%^$mbase%} keys %checkedout;
     unshift(@todo, $dad) if $checkedout{$dad};
-    $ct->argv('ci', [qw(-nc -ide), @ptime], sort @todo)->system if @todo;
+    $ct->argv('ci', [@cmnt, '-ide', @ptime], sort @todo)->system if @todo;
     # Fix the protections of the target files if requested.
     if ($self->protect) {
 	my %perms;

@@ -89,3 +89,7 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.25 Tue Sep 18 09:34:34 EDT 2001
 	- Added -stop option to synctree.
+
+0.26 Mon Sep 24 19:37:20 EDT 2001
+	- Bugfix for "synctree -sbase / ..." case.
+	- Fixed so that parent dirs have same comments as files.

@@ -43,7 +43,7 @@ Flags:
    -c <comment>		Use specified comment for checkins
    -no			Exit after showing a preview
    -yes			Perform all work without prompts
-   -nprotect		Turn off "cleartool protect -chmod" phase
+   -nprotect		Turn off "cleartool protect -chmod" phase (UNIX only)
    -reuse		Attempt to reuse existing elements of same name
    -summary 		Print a summary of cleartool activities when done
    -verbose <n>		Set to 0 for least verbosity, 2 for most (default=1)
@@ -53,6 +53,7 @@ Flags:
 Notes:
     All flags may be abbreviated to their shortest unique name.
     Run "perldoc synctree" for detailed documentation and examples.
+    Or "perldoc ClearCase::SyncTree" for even more documentation.
 Examples:
     $prog -sbase /tmp/newcode -dbase /vobs_tps/foo /tmp/newcode
     $prog -sb /tmp/newcode -db /vobs_tps/foo -N '\.java\$' -rm -yes
