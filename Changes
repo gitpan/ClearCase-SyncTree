@@ -1,0 +1,8 @@
+Revision history for Perl extension ClearCase::SyncTree.
+
+0.01 Sat Jan  8 12:20:26 2000
+	- original version; created by h2xs 1.19
+
+0.05 Tue Jul 18 13:18:33 EDT 2000
+	- First public release.
+	- Includes 'synctree' script

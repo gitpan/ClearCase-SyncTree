@@ -1,0 +1,143 @@
+#!/usr/local/bin/perl
+
+use ClearCase::Argv 0.23;
+use ClearCase::SyncTree 0.05;
+use File::Basename;
+use File::Find;
+use File::Spec 0.82;
+use Getopt::Long 2.17;
+
+use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i;
+
+my $prog = basename($0, qw(.pl));
+
+sub usage {
+    my $msg = shift;
+    my $rc = (defined($msg) && !$msg) ? 0 : 2;
+    if ($rc) {
+	select STDERR;
+	print "$prog: Error: $msg\n\n" if $msg;
+    }
+    print <<EOF;
+Usage: $prog [flags] -sbase <dir> -dbase <vob-dir> [pname ...]
+Flags:
+   -help		Print this message and exit
+   -dbase <vob-dir>	The destination base directory
+   -sbase <dir>		The source base directory
+   -flist <file>	A file containing a list of files or "-" for stdin
+   -force		Continue despite errors
+   -ci			Check in changes (default is to leave co'ed).
+   -subtract		Remove files in dest area that aren't in src
+   -label <lbtype>	Apply the specified label when done
+Examples:
+    $prog -sbase /tmp/newstuff -dbase /vobs_tps/foo
+EOF
+    exit $rc; }
+
+my @sources;
+
+sub wanted {
+    my $path = File::Spec->rel2abs($File::Find::name);
+    if (-f $_) {
+	push(@sources, $path);
+    } elsif (-d _) {
+	if ($_ eq 'lost+found') {
+	    $File::Find::prune = 1;
+	    return;
+	}
+	push(@sources, $path);
+    } elsif (-l $_) {
+	warn "Warning: $path: not yet supporting symlinks";
+    } else {
+	die "$prog: Error: unsupported file type: $path\n";
+    }
+}
+
+ClearCase::Argv->attropts;
+
+local $Getopt::Long::ignorecase = 0;  # global override for dumb default
+my %opt;
+# A little hack to parse -c <cmnt> independently of -ci etc.
+{
+    local $Getopt::Long::autoabbrev = 0;
+    local $Getopt::Long::passthrough = 1;
+    GetOptions(\%opt, 'comment|c=s');
+}
+GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s
+		     ci|checkin force subtract testdrive
+));
+usage() if $opt{help} || !@ARGV;
+usage("-sbase is a required flag") if !$opt{sbase};
+usage("-dbase is a required flag") if !$opt{dbase};
+for (@opt{qw(dbase sbase)}) {
+    die "$prog: Error: no such directory $_\n" unless -d;
+    $_ = File::Spec->rel2abs($_);
+}
+
+if ($opt{flist}) {
+    open(FLIST, $opt{flist}) || die "$prog: Error: $opt{flist}: $!";
+    @sources = <FLIST>;
+    chomp @sources;
+    close(FLIST);
+}
+
+#push(@ARGV, $opt{sbase}) if !@ARGV && !$opt{flist};
+for my $pname (@ARGV) {
+    find(\&wanted, $pname);
+}
+
+# Create a 'synctree' object.
+my $sync = ClearCase::SyncTree->new;
+$sync->err_handler(0) if $opt{force};
+# Specify the comment to attach to any changes.
+$sync->comment($opt{comment} || $opt{comment} || "By:$0");
+# Tell it where the files are coming from ...
+$sync->srcbase($opt{sbase});
+# Tell it where they're going to ...
+$sync->dstbase($opt{dbase});
+# The label to apply when done ...
+$sync->lbtype($opt{lbtype}) if $opt{lbtype};
+# Supply the list of required files.
+$sync->srclist(@sources);
+# Compare src and dest lists and figure out what to do.
+$sync->analyze;
+# Create new elements in the target area.
+$sync->add;
+# Update existing files which differ between src and dest.
+$sync->modify;
+# Remove any files from dest that aren't in src.
+$sync->subtract if $opt{subtract};
+# Label the above work, including any still-checked-out files.
+$sync->label;
+# Undo all work and exit if we're just going for a test drive.
+$sync->fail(0) if $opt{testdrive};
+# Otherwise, check in the changes.
+$sync->checkin if $opt{ci};
+
+__END__
+
+=head1 NAME
+
+synctree - Normalize a tree of files with a tree of ClearCase elements
+
+=head1 SYNOPSIS
+
+Run this script with the C<-help> option for usage details.
+
+=head1 DESCRIPTION
+
+=head1 AUTHOR
+
+David Boyce <dsb@world.std.com>
+
+=head1 COPYRIGHT
+
+Copyright (c) 2000 David Boyce. All rights reserved.  This Perl
+program is free software; you may redistribute and/or modify it under
+the same terms as Perl itself.
+
+=head1 SEE ALSO
+
+perl(1)
+
+=cut
