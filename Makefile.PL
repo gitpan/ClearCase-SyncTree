@@ -7,6 +7,7 @@ WriteMakefile(
     'PREREQ_PM'		=> {
 	Argv		=> 0.53,
 	ClearCase::Argv	=> 0.23,
+	File::Spec	=> 0.82,
     },
     'dist'		=> {
 	COMPRESS	=>   'gzip --force --best',

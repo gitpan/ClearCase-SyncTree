@@ -1,8 +1,8 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.06';
+$VERSION = '0.10';
 
-require 5.004;	# but primarily used/tested with 5.005+
+require 5.004;
 
 use strict;
 
@@ -152,7 +152,7 @@ sub no_cr {
 sub no_cmp {
     my $self = shift;
     $self->{ST_NO_CMP} = 1 if $_[0] || !defined(wantarray);
-    return $self->{ST_NO_CMP};
+    return $self->{ST_NO_CMP} || 0;
 }
 
 sub srclist {
@@ -205,7 +205,7 @@ sub srcmap {
 sub eltypemap {
     my $self = shift;
     %{$self->{ST_ELTYPEMAP}} = @_ if @_;
-    return %{$self->{ST_ELTYPEMAP}};
+    return $self->{ST_ELTYPEMAP} ? %{$self->{ST_ELTYPEMAP}} : ();
 }
 
 sub analyze {
@@ -234,9 +234,18 @@ sub analyze {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
 	} elsif (! -d $src) {
-	    my $update = $self->no_cmp || compare($src, $dst);
-	    if ($update) {
+	    my $update = 0;
+	    if (-l $src && -l $dst) {
+		my $stxt = readlink $src;
+		my $dtxt = readlink $dst;
+		$update = $self->no_cmp || ($stxt ne $dtxt);
+	    } elsif (! -l $src && ! -l $dst) {
+		$update = $self->no_cmp || compare($src, $dst);
 		warn "Warning: error comparing $src vs $dst" if $update < 0;
+	    } else {
+		$update = 1;
+	    }
+	    if ($update) {
 		$self->{ST_MOD}->{$_}->{src} = $src;
 		$self->{ST_MOD}->{$_}->{dst} = $dst;
 	    }
@@ -247,7 +256,7 @@ sub analyze {
 sub preview {
     my $self = shift;
     my $subtracting = shift;
-    my $fmt = "   %s -> %s\n";
+    my $fmt = "   %s =>\n\t%s\n";
     print "Adding:\n" if $self->{ST_ADD};
     for (keys %{$self->{ST_ADD}}) {
 	printf $fmt, $self->{ST_ADD}->{$_}->{src}, $self->{ST_ADD}->{$_}->{dst};
@@ -260,6 +269,7 @@ sub preview {
 	##print "Subtracting:\n" if $self->{ST_MOD};
 	## This part is difficult and I haven't gotten to it yet ...
     }
+    return keys(%{$self->{ST_ADD}}) + keys(%{$self->{ST_MOD}});
 }
 
 sub add {
@@ -271,15 +281,21 @@ sub add {
     for (sort keys %{$self->{ST_ADD}}) {
 	my $src = $self->{ST_ADD}->{$_}->{src};
 	my $dst = $self->{ST_ADD}->{$_}->{dst};
-	if (-d $src) {
+	if (-d $src && ! -l $src) {
 	    -e $dst || mkpath($dst, 0, 0777) || die "Error: $dst: $!";
 	} elsif (-e $src) {
 	    my $dad = dirname($dst);
 	    -d $dad || mkpath($dad, 0, 0777) || die "Error: $dad: $!";
-	    copy($src, $dst) || die "Error: $_: $!\n";
-	    utime(time(), (stat $src)[9], $dst) ||
-		    warn "Warning: $dst: touch failed";
-	    $self->{ST_CI_FROM}->{$_} = $self->{ST_ADD}->{$_};
+	    if (-l $src) {
+		open(SLINK, ">$dst.=lnk=") || die "Error: $$dst.=lnk=: $!";
+		print SLINK readlink($src), "\n";;
+		close(SLINK);
+	    } else {
+		copy($src, $dst) || die "Error: $_: $!\n";
+		utime(time(), (stat $src)[9], $dst) ||
+			warn "Warning: $dst: touch failed";
+		$self->{ST_CI_FROM}->{$_} = $self->{ST_ADD}->{$_};
+	    }
 	} else {
 	    warn "Error: $src: no such file or directory\n";
 	    $ct->fail;
@@ -289,7 +305,7 @@ sub add {
 			$ct->argv('lsp', [qw(-oth -s -inv), $mbase])->qx;
     return if !@candidates;
     # We'll be separating the elements-to-be into files and directories.
-    my(@files, %dirs);
+    my(@files, @symlinks, %dirs);
     # If the parent directories of any of the candidates are
     # already versioned, we'll need to check them out unless
     # it's already been done.
@@ -308,7 +324,11 @@ sub add {
     # Process candidate directories here, then do files below.
     for my $cand (@candidates) {
 	if (! -d $cand) {
-	    push(@files, $cand);
+	    if ($cand =~ /\.=lnk=$/) {
+		push(@symlinks, $cand);
+	    } else {
+		push(@files, $cand);
+	    }
 	    next;
 	}
 	# Now we know we're dealing with directories.  These cannot
@@ -338,27 +358,68 @@ sub add {
 	closedir DIR;
 	rmdir $tmpdir || warn "Error: $tmpdir: $!";
     }
+
+    # Now do the files in one fell swoop.
     $ct->argv('mkelem', $self->comment, @files)->system if @files;
+
+    # Last, deal with symlinks.
+    for my $symlink (@symlinks) {
+	(my $lnk = $symlink) =~ s/.=lnk=$//;
+	if (!open(SLINK, $symlink)) {
+	    warn "$symlink: $!";
+	    next;
+	}
+	chomp(my $txt = <SLINK>);
+	close SLINK;
+	unlink $symlink;
+	$ct->argv('ln', ['-s'], $txt, $lnk)->system;
+    }
 }
 
 sub modify {
     my $self = shift;
     return if !keys %{$self->{ST_MOD}};
-    my $dbase = $self->dstbase;
-    my $co = $self->clone_ct('co', $self->comment);
-    $co->args(map {$self->{ST_MOD}->{$_}->{dst}} keys %{$self->{ST_MOD}});
-    $co->system;
-    for (keys %{$self->{ST_MOD}}) {
-	$self->{ST_CI_FROM}->{$_} = $self->{ST_MOD}->{$_} if !$self->no_cr;
-	my $src = $self->{ST_MOD}->{$_}->{src};
-	my $dst = $self->{ST_MOD}->{$_}->{dst};
-	if (!copy($src, $dst)) {
-	    warn "Error: $dst: $!\n";
-	    $co->fail;
-	    next;
+    my(@files, @symlinks);
+    for (sort keys %{$self->{ST_MOD}}) {
+	if (-l $self->{ST_MOD}->{$_}->{src}) {
+	    push(@symlinks, $_)
+	} else {
+	    push(@files, $_)
 	}
-	utime(time(), (stat $src)[9], $dst) ||
+    }
+    my $co = $self->clone_ct('co', $self->comment);
+    if (@files) {
+	$co->args(map {$self->{ST_MOD}->{$_}->{dst}} @files)->system;
+	for (@files) {
+	    $self->{ST_CI_FROM}->{$_} = $self->{ST_MOD}->{$_} if !$self->no_cr;
+	    my $src = $self->{ST_MOD}->{$_}->{src};
+	    my $dst = $self->{ST_MOD}->{$_}->{dst};
+	    if (!copy($src, $dst)) {
+		warn "Error: $dst: $!\n";
+		$co->fail;
+		next;
+	    }
+	    utime(time(), (stat $src)[9], $dst) ||
 				    warn "Warning: $dst: touch failed";
+	}
+    }
+    if (@symlinks) {
+	my $dbase = $self->dstbase;
+	my %checkedout = map {$_ => 1}
+		    $self->ct->argv('lsco', [qw(-s -cvi -a)], $dbase)->qx;
+	my $ln = $co->clone->prog('ln');
+	$ln->opts('-s', $ln->opts);
+	my $rm = $co->clone->prog('rmname');
+	for (@symlinks) {
+	    my $txt = readlink $self->{ST_MOD}->{$_}->{src};
+	    my $lnk = $self->{ST_MOD}->{$_}->{dst};
+	    my $dad = dirname($lnk);
+	    if (!$checkedout{$dad}) {
+		$checkedout{$dad} = 1 if ! $co->args($dad)->system;
+	    }
+	    $rm->args($lnk)->system;
+	    $ln->args($txt, $lnk)->system;
+	}
     }
 }
 
@@ -366,7 +427,7 @@ sub subtract {
     my $self = shift;
     my $dbase = $self->dstbase;
     my $ct = $self->clone_ct;
-    my %checkedout = map {$_ => 1} grep m%^$dbase%,
+    my %checkedout = map {$_ => 1}
 		    $ct->argv('lsco', [qw(-s -cvi -a)], $dbase)->qx;
     my(%dirs, %files, @exfiles, @exdirs);
     my $wanted = sub {

@@ -32,7 +32,8 @@ Flags:
    -cr			Checkin in such a way as to preserve CR's (slower)
    -subtract		Remove files in dest area that aren't in src
    -label <lbtype>	Apply the specified label when done
-   -preview		Show what would be done without doing it, then exit
+   -ok			Show what would be done then query before proceeding
+   -preview		Like -ok but exit after showing preview.
    -testdrive		Do the work, then unco it all and exit
    -Narrow [!]<re>	Limit files found to those which match /re/
 Examples:
@@ -43,35 +44,36 @@ EOF
     exit $rc; }
 
 my @sources;
-my($only, $skip);
 my %opt;
 
-sub wanted {
-    my $path = File::Spec->rel2abs($File::Find::name);
-    $path =~ s%\\%/%g if MSWIN;
-    if (! -d && defined $opt{Narrow}) {
-	$only ||= join('|', grep !/^!/, @{$opt{Narrow}});
-	return if $only && $path !~ /$only/;
-	$skip = join('|', map {(m/^!(.*)/)[0]} grep /^!/, @{$opt{Narrow}});
-	return if $skip && $path =~ /$skip/;
-    }
-    if (-f $_) {
-	push(@sources, $path);
-    } elsif (-d _) {
-	if ($_ eq 'lost+found') {
-	    $File::Find::prune = 1;
-	    return;
+{
+    my($only, $skip);
+    sub wanted {
+	my $path = File::Spec->rel2abs($File::Find::name);
+	$path =~ s%\\%/%g if MSWIN;
+	if (! -d && defined $opt{Narrow}) {
+	    $only ||= join('|', grep !/^!/, @{$opt{Narrow}});
+	    return if $only && $path !~ /$only/;
+	    $skip = join('|', map {(m/^!(.*)/)[0]} grep /^!/, @{$opt{Narrow}});
+	    return if $skip && $path =~ /$skip/;
 	}
-    } elsif (-l $_) {
-	warn "Warning: $path: not yet supporting symlinks";
-    } else {
-	die "$prog: Error: unsupported file type: $path\n";
+	if (-f $_ || -l $_) {
+	    push(@sources, $path);
+	} elsif (-d _) {
+	    if ($_ eq 'lost+found') {
+		$File::Find::prune = 1;
+		return;
+	    }
+	} elsif (! -e _) {
+	    die "$prog: Error: no such file or directory: $path\n";
+	} else {
+	    die "$prog: Error: unsupported file type: $path\n";
+	}
     }
 }
 
 ClearCase::Argv->attropts;
 ClearCase::Argv->inpathnorm(0);
-ClearCase::Argv->outpathnorm(1);
 
 local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 # A little hack to parse -c <cmnt> independently of -ci etc.
@@ -82,7 +84,7 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s
 		     Narrow=s@
-		     help ci cr force preview subtract testdrive
+		     help ci cr force ok preview subtract testdrive
 ));
 usage() if $opt{help};
 usage("-sbase is a required flag") if !$opt{sbase};
@@ -97,6 +99,7 @@ if ($opt{flist}) {
     open(FLIST, $opt{flist}) || die "$prog: Error: $opt{flist}: $!";
     @sources = <FLIST>;
     chomp @sources;
+    @sources = grep -f, @sources;
     close(FLIST);
 }
 
@@ -124,10 +127,12 @@ $sync->dstbase($opt{dbase});
 $sync->srclist(@sources);
 # Compare src and dest lists and figure out what to do.
 $sync->analyze;
-# If -preview, five the preview and exit.
-if ($opt{preview}) {
-    $sync->preview($opt{subtract});
-    exit 0;
+# If -preview, give a preview and exit. If -ok, ask for OK and proceed.
+if ($opt{ok} || $opt{preview}) {
+    my $changes = $sync->preview($opt{subtract});
+    exit 0 if !$opt{ok} || !$changes;
+    print "Continue with these $changes changes? [proceed] ";
+    exit 0 if <STDIN> =~ /^a/i;
 }
 # Create new elements in the target area.
 $sync->add;
@@ -144,6 +149,11 @@ $sync->eltypemap('\.xml$' => 'compressed_file');
 # Get rid of any exception handler before starting the checkin
 # process, as once a checkin succeeds there's no going back.
 $sync->err_handler(0);
+# Prompt the user before checkin if -ok in use.
+if ($opt{ok} && !$opt{ci}) {
+    print "Checkin all changes? [proceed] ";
+    $opt{ci} = 1 if <STDIN> !~ /^a/i;
+}
 # Now check in the changes: one at a time if -cr, otherwise
 # all at once.
 $sync->no_cr unless $opt{cr};
@@ -203,9 +213,9 @@ turned into absolute paths, then the path given with the I<-sbase>
 parameter is removed and replaced with that of I<-dbase> to produce the
 destination pathname.
 
-Consider using the I<-preview> or I<-testdrive> flags the first time
-you use this on a valued VOB, even though nothing irreversible is done
-(e.g.  no I<rmelem>, I<rmbranch>, I<rmver>, I<rmtype>, etc.).
+Consider using the I<-preview>, I<ok>, or I<-testdrive> flags the first
+time you use this on a valued VOB, even though nothing irreversible is
+done (e.g.  no I<rmelem>, I<rmbranch>, I<rmver>, I<rmtype>, etc.).
 
 =head1 AUTHOR
 
