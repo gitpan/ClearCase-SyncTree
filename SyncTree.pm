@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.35';
+$VERSION = '0.36';
 
 require 5.004;
 
@@ -224,6 +224,20 @@ sub mvfsdrive {
 	Win32::TieRegistry->import('TiedHash', '%RegHash');
 	$self->{ST_MVFSDRIVE} = $RegHash{LMachine}->{SYSTEM}->
 		{CurrentControlSet}->{Services}->{Mvfs}->{Parameters}->{drive};
+	# Apparently one must be a local admin to read the HKLM area,
+	# so we fall back to a slower, dumber way if the above fails.
+	# There's also Win32::DriveInfo but that isn't bundled with AS
+	# or Rational Perls.
+	if (! $self->{ST_MVFSDRIVE}) {
+	    for (qx(net use)) {
+		next unless m%\s([D-Z]):\s%i;
+		if (-f "$1:/.specdev") {
+		    $self->{ST_MVFSDRIVE} = $1;
+		    last;
+		}
+	    }
+	}
+	die "$0: Error: unable to find MVFS drive" unless $self->{ST_MVFSDRIVE};
     }
     return $self->{ST_MVFSDRIVE};
 }

@@ -141,3 +141,6 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.35 Wed Jan 21 15:30:21 EST 2004
 	- Cleaned up and documented the 0.32-0.34 work for release.
+
+0.36 Tue Feb 10 14:44:31 EST 2004
+	- Made Windows-specific mvfsdrive() method more robust.
