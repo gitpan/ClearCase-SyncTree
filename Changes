@@ -81,3 +81,8 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Fixed synctree to return nonzero if any checkin fails.
 	- Bugfix: transport non-resolving (dangling) symlinks correctly.
 	- Require Argv 1.00 or above (related bugfixes there).
+
+0.24 Fri Sep 14 14:05:40 EDT 2001
+	- Fixed an obscure bug involving -reuse and -cr together.
+	- Some improvements to -map/-flist and docs thereof
+	- Added -lbmods flag to synctree.

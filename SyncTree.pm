@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.23';
+$VERSION = '0.24';
 
 require 5.004;
 
@@ -135,6 +135,15 @@ sub normalize {
 	s%/\.?$%%;
     }
     return $path;
+}
+
+sub canonicalize {
+    my $self = shift;
+    my $base = shift;
+    for (@_) {
+	$_ = File::Spec->canonpath(join('/', $base, $_))
+			if $_ && ! File::Spec->file_name_is_absolute($_);
+    }
 }
 
 sub _lsprivate {
@@ -307,6 +316,12 @@ sub lbtype {
     return $self->{ST_LBTYPE};
 }
 
+sub label_mods {
+    my $self = shift;
+    $self->{ST_LABEL_MODS} = 1 if $_[0] || !defined(wantarray);
+    return $self->{ST_LABEL_MODS};
+}
+
 sub no_cr {
     my $self = shift;
     $self->{ST_NO_CR} = 1 if $_[0] || !defined(wantarray);
@@ -453,7 +468,7 @@ sub analyze {
 	my $dst = $self->{ST_SRCMAP}->{$_}->{dst};
 	$dst2src{$dst} = $_ if $dst;
     }
-    for (keys %files) {
+    for (sort keys %files) {
 	next if $self->{ST_SRCMAP}->{$_} && !$self->{ST_SRCMAP}->{$_}->{dst};
 	push(@xfiles, $files{$_}) if !$dst2src{$_};
     }
@@ -469,7 +484,7 @@ sub preview {
     if ($self->{ST_ADD}) {
 	$adds = keys %{$self->{ST_ADD}};
 	print "Adding $adds files:\n";
-	for (keys %{$self->{ST_ADD}}) {
+	for (sort keys %{$self->{ST_ADD}}) {
 	    printf "$indent%s +=>\n\t%s\n", $self->{ST_ADD}->{$_}->{src},
 			 $self->{ST_ADD}->{$_}->{dst};
 	}
@@ -477,7 +492,7 @@ sub preview {
     if ($self->{ST_MOD}) {
 	$mods = keys %{$self->{ST_MOD}};
 	printf "Modifying $mods files:\n";
-	for (keys %{$self->{ST_MOD}}) {
+	for (sort keys %{$self->{ST_MOD}}) {
 	    printf "$indent%s ==>\n\t%s\n", $self->{ST_MOD}->{$_}->{src},
 			 $self->{ST_MOD}->{$_}->{dst};
 	}
@@ -595,6 +610,7 @@ sub add {
 	my $ds = ClearCase::Argv->desc([qw(-s)]);
 	$ds->stderr(1);
 	my $ln = ClearCase::Argv->ln;
+	my(%no_ci, %xkeys);
 	for my $elem (keys %files) {
 	    my($name, $dir) = fileparse($elem);
 	    chomp(my @vtree = reverse $vt->args($dir)->qx);
@@ -607,8 +623,22 @@ sub add {
 		    last;
 		}
 	    }
+	    $no_ci{$elem} = 1;
 	}
-	# If any elements were "reconstituted" they may be candidates for
+	# If any elements were "reconstituted", they must be taken off the
+	# list of elems to be checked in explicitly, since 'ct ln' is
+	# just a directory op.
+	if (!$self->no_cr && %no_ci) {
+	    for (keys %{$self->{ST_CI_FROM}}) {
+		if ($no_ci{$self->{ST_CI_FROM}->{$_}->{dst}}) {
+		    $xkeys{$_} = 1;
+		}
+	    }
+	    for (keys %xkeys) {
+		delete $self->{ST_CI_FROM}->{$_};
+	    }
+	}
+	# Also, reconstituted elements may now be candidates for
 	# modification. Therefore, re-analyze the situation (the 'add'
 	# list should be null this time through but we don't care about
 	# that by this point).
@@ -727,15 +757,22 @@ sub label {
 	$locked = $self->clone_ct->lslock(['-s'], "lbtype:$lbtype\@$dbase")->qx;
 	$ct->unlock("lbtype:$lbtype\@$dbase")->system if $locked;
     }
-    $ctq->mklabel([qw(-rep -rec -nc), $lbtype], $dbase)->system;
-    # Last, label the ancestors of the destination back to the vob tag.
-    my $dvob = $self->normalize($self->dstvob);
-    my($dad, @ancestors);
-    for ($dad = dirname($dbase);
-		    length($dad) >= length($dvob); $dad = dirname($dad)) {
-	push(@ancestors, $dad);
+    if ($self->label_mods) {
+	if (my @mods = $self->_lsco) {
+	    $ctq->mklabel([qw(-nc -rep), $lbtype], @mods)->system;
+	}
+    } else {
+	$ctq->mklabel([qw(-rep -rec -nc), $lbtype], $dbase)->system;
+	# Last, label the ancestors of the destination back to the vob tag.
+	my $dvob = $self->normalize($self->dstvob);
+	my($dad, @ancestors);
+	for ($dad = dirname($dbase);
+			length($dad) >= length($dvob); $dad = dirname($dad)) {
+	    push(@ancestors, $dad);
+	}
+	$ctq->mklabel([qw(-rep -nc), $lbtype], @ancestors)->system
+								if @ancestors;
     }
-    $ctq->mklabel([qw(-rep -nc), $lbtype], @ancestors)->system if @ancestors;
     $self->clone_ct->lock("lbtype:$lbtype\@$dbase")->system if $locked;
 }
 
@@ -976,6 +1013,8 @@ vob root. Example:
 
     $obj->label('FOO');
 
+See also I<-E<gt>label_mods>.
+
 =item * -E<gt>checkin
 
 Checks in all checkouts under the I<dstbase> area.
@@ -1024,6 +1063,12 @@ to be the same element and link the old and new names.
 Sets a boolean indicating whether to throw away the timestamp of the
 source file and give modified files their checkin date instead. This
 flag is I<false> by default (i.e. checkins have I<-ptime> behavior).
+
+=item * -E<gt>label_mods
+
+By default the I<-E<gt>label> method will recursively label all
+visible elements under the I<dstbase> directory. With this
+attribute set it will label only modified elements instead.
 
 =item * -E<gt>no_cr
 
@@ -1129,4 +1174,4 @@ bug reports or patches to the address above.
 
 =head1 SEE ALSO
 
-perl(1), ClearCase::Argv(3), Getopt::Long(3), IPC::ChildSafe(3)
+perl(1), synctree(1), ClearCase::Argv(3), Getopt::Long(3), IPC::ChildSafe(3)
