@@ -22,3 +22,12 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Fixed a bug in symlink code.
 	- "synctree -subtract" becomes "synctree -rm".
 	- Added synctree -ctime flag.
+
+0.12 Thu Aug  3 22:51:07 EDT 2000
+	- Reworked some of the flags in 'synctree' to be more
+	  compatible with Paul Smith's citree script. Replaced
+	  -ok with -y (sense toggled), replaced -preview with -n.
+
+0.13 Mon Aug  7 16:38:14 EDT 2000
+	- Bugfix involving misplaced -ptime flag, caused by
+	  overenthusiastic cleanup.

@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.11';
+$VERSION = '0.13';
 
 require 5.004;
 
@@ -113,9 +113,11 @@ sub dstbase {
     if (@_) {
 	my $dbase = shift;
 	$self->{ST_DSTBASE} = $dbase;
-	my $dvob = ClearCase::Argv->desc(['-s'], "vob:$dbase")->qx;
-	chomp $dvob;
-	$self->dstvob($dvob);
+	if (!$self->dstvob) {
+	    my $dvob = ClearCase::Argv->desc(['-s'], "vob:$dbase")->qx;
+	    chomp $dvob;
+	    $self->dstvob($dvob);
+	}
     }
     return $self->{ST_DSTBASE};
 }
@@ -537,7 +539,7 @@ sub checkin {
     # Do one-by-one ci's with -from (to preserve CR's) unless
     # otherwise requested.
     if (! $self->no_cr) {
-	$ct->argv('ci', [qw(-nc -ide -rm -from), @ptime]);
+	$ct->argv('ci', [@ptime, qw(-nc -ide -rm -from)]);
 	for (keys %{$self->{ST_CI_FROM}}) {
 	    my $src = $self->{ST_CI_FROM}->{$_}->{src};
 	    my $dst = $self->{ST_CI_FROM}->{$_}->{dst};

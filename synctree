@@ -34,10 +34,13 @@ Flags:
    -rm			Remove files in dest area that aren't in src
    -label <lbtype>	Apply the specified label when done
    -c <comment>		Use specified comment for checkins
-   -ok			Show what would be done then query before proceeding
-   -preview		Like -ok but exit after showing preview.
+   -n			Exit after showing a preview.
+   -yes			Perform all work without asking first
    -testdrive		Do the work, then unco it all and exit
    -Narrow [!]<re>	Limit files found to those which match /re/
+   -/dbg=1		Verbose: show all cleartool commands
+Note:
+    All flags may be abbreviated to their shortest unique name.
 Examples:
     $prog -sbase /tmp/newcode -dbase /vobs_tps/foo /tmp/newcode
     $prog -sbase /tmp/newcode -dbase /vobs_tps/foo -C '\.java\$' /tmp/newcode
@@ -82,12 +85,13 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 {
     local $Getopt::Long::autoabbrev = 0;
     local $Getopt::Long::passthrough = 1;
-    GetOptions(\%opt, 'comment|c=s');
+    GetOptions(\%opt, 'comment|c=s') || exit 1;
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s
 		     Narrow=s@
-		     help ci cr ctime force ok preview rm testdrive
-));
+		     Add Modify Rm
+		     help ci cr ctime force preview|n ok rm testdrive yes
+)) || exit 1;
 usage() if $opt{help};
 usage("-sbase is a required flag") if !$opt{sbase};
 usage("-dbase is a required flag") if !$opt{dbase};
@@ -131,17 +135,21 @@ $sync->dstbase($opt{dbase});
 $sync->srclist(@sources);
 # Compare src and dest lists and figure out what to do.
 $sync->analyze;
-# If -preview, give a preview and exit. If -ok, ask for OK and proceed.
-if ($opt{ok} || $opt{preview}) {
+# If -preview, give a preview and exit. Ask for OK to proceed unless -yes.
+if (!$opt{yes} || $opt{preview}) {
     my $changes = $sync->preview($opt{rm});
-    exit 0 if !$opt{ok} || !$changes;
+    exit 0 if $opt{preview};
+    if (!$changes) {
+	warn "Warning: cannot predict -rm behavior\n" if $opt{rm};
+	exit 0;
+    }
     exit 0 if system(qw(clearprompt proceed -pro),
 				"Continue with these $changes changes?");
 }
 # Create new elements in the target area.
-$sync->add;
+$sync->add unless $opt{Add};
 # Update existing files which differ between src and dest.
-$sync->modify;
+$sync->modify unless $opt{Modify};
 # Remove any files from dest that aren't in src, if requested.
 $sync->subtract if $opt{rm};
 # Optionally label the above work, including any still-checked-out files.
@@ -153,15 +161,15 @@ $sync->eltypemap('\.xml$' => 'compressed_file');
 # Get rid of any exception handler before starting the checkin
 # process, as once a checkin succeeds there's no going back.
 $sync->err_handler(0);
-# Prompt the user before checkin if -ok in use.
-if ($opt{ok} && !$opt{ci}) {
+# Prompt the user before checkin if -yes not in use.
+if (!$opt{yes} && !$opt{ci}) {
     $opt{ci} = 1 if !system(qw(clearprompt proceed -pro),
 						    "Check in all changes?");
 }
 # Now check in the changes: one at a time if -cr, otherwise
 # all at once.
 $sync->no_cr unless $opt{cr};
-$sync->checkin if $opt{ci} || $opt{cr};
+$sync->checkin if $opt{ci} || $opt{cr} || $opt{yes};
 
 __END__
 
@@ -221,9 +229,16 @@ Symbolic links are supported, even on Windows.  Note that the text of
 the link is transported verbatim from source area to dest area; thus
 relative symlinks may no longer resolve in the destination.
 
-Consider using the I<-preview>, I<ok>, or I<-testdrive> flags the first
-time you use this on a valued VOB, even though nothing irreversible is
-done (e.g.  no I<rmelem>, I<rmbranch>, I<rmver>, I<rmtype>, etc.).
+Consider using the I<-n> or I<-testdrive> flags the first time you use
+this on a valued VOB, even though nothing irreversible is done (e.g.
+no I<rmelem>, I<rmbranch>, I<rmver>, I<rmtype>, etc.).  And by the same
+token use I<-ci> and I<-yes> with care.
+
+=head1 DEBUGGING
+
+The special flag I<-/dbg=1> will cause all underlying cleartool
+commands to be printed as they are run (this is actually a feature of
+the Argv module on which I<synctree> is built).
 
 =head1 AUTHOR
 
