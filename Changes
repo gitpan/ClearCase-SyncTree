@@ -53,3 +53,6 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Fixed a recently-introduced bug breaking -rm/name.
 	- Added a ->reuse method to SyncTree and -reuse flag to synctree.
 	  (tested exactly once on one file).
+
+0.20 Tue Feb 27 14:44:25 EST 2001
+	- Fixed bug in synctree: clearprompt result must be >>8.

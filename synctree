@@ -1,6 +1,4 @@
-:
-eval 'exec /tools/$MACHINE/bin/perl -S $0 ${1+"$@"}'
-    if 0;
+#!/usr/local/bin/perl
 
 use ClearCase::Argv 0.23;
 use ClearCase::SyncTree 0.19;
@@ -202,7 +200,7 @@ $sync->err_handler(0);
 if (!$opt{yes} && !$opt{ci}) {
     my $msg = "Check in all changes ('abort' to unco)?";
     $msg = qq("$msg") if MSWIN;
-    my $resp = system(qw(clearprompt yes_no -pro), $msg);
+    my $resp = system(qw(clearprompt yes_no -pro), $msg) >> 8;
     $sync->fail if $resp > 1;
     $opt{ci} = !$resp;
 }

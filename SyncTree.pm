@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.19';
+$VERSION = '0.20';
 
 require 5.004;
 
