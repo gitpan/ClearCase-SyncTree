@@ -1,0 +1,11 @@
+<HTML><BODY>
+This is a program/module for bringing a set of files under ClearCase
+control by making the minimal set of required changes and running the
+minimal set of cleartool operations. The real code is in the module,
+but a wrapper script 'synctree' is provided for command-line access.
+For those familar with 'citree', consider this a version of citree that
+works on both UNIX and Windows NT (citree is UNIX-only).  Note: newer
+versions may be present at
+<A HREF="http://www.perl.com/CPAN-local/modules/by-module/IPC/DSB/">
+http://www.perl.com/CPAN-local/modules/by-module/IPC/DSB/</A>.
+</BODY></HTML>

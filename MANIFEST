@@ -2,6 +2,7 @@ Changes
 MANIFEST
 Makefile.PL
 README
+SUMMARY.T0047
 SyncTree.pm
 synctree
 test.pl
