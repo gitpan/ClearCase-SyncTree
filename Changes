@@ -91,5 +91,12 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Added -stop option to synctree.
 
 0.26 Mon Sep 24 19:37:20 EDT 2001
-	- Bugfix for "synctree -sbase / ..." case.
+	- Bugfix for "-sbase=/" case.
 	- Fixed so that parent dirs have same comments as files.
+
+0.27 Mon Oct 22 22:35:07 EDT 2001
+	- POD work.
+	- Added an optimization; when comparing src-vs-dest files,
+	  compare sizes before invoking File::Compare::cmp(). This
+	  is not only faster, it stops ClearCase from having to
+	  construct cleartext for every file just to compare it.

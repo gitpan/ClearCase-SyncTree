@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.26';
+$VERSION = '0.27';
 
 require 5.004;
 
@@ -421,6 +421,7 @@ sub analyze {
 	my $src = join('/', $sbase, $_);
 	$src = $_ if ! -e $src && (MSWIN || ! -l $src);
 	my $dst = join('/', $dbase, $self->{ST_SRCMAP}->{$_}->{dst} || $_);
+	#$self->{ST_SRCMAP}->{$_}->{dst} = $dst;
 	if (! -e $dst && ! -l $dst) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
@@ -431,9 +432,15 @@ sub analyze {
 		my $dtxt = readlink $dst;
 		$update = $self->no_cmp || ($stxt ne $dtxt);
 	    } elsif (! -l $src && ! -l $dst) {
-		$update = $self->no_cmp || &$compare($src, $dst);
-		die "$0: Error: failed comparing $src vs $dst: $!"
+		if ($self->no_cmp) {
+		    $update = 1;
+		} elsif (-s $src != -s $dst) {
+		    $update = 1;
+		} else {
+		    $update = &$compare($src, $dst);
+		    die "$0: Error: failed comparing $src vs $dst: $!"
 								if $update < 0;
+		}
 	    } else {
 		$update = 1;
 	    }
@@ -1067,9 +1074,10 @@ flag is I<false> by default (i.e. checkins have I<-ptime> behavior).
 
 =item * -E<gt>label_mods
 
-By default the I<-E<gt>label> method will recursively label all
-visible elements under the I<dstbase> directory. With this
-attribute set it will label only modified elements instead.
+By default the I<-E<gt>label> method will recursively label all visible
+elements under the I<dstbase> directory. With this attribute set it
+will label only modified elements instead.  Note that this may cause
+confusion if an element is labeled but its parent directory isn't.
 
 =item * -E<gt>no_cr
 
@@ -1082,17 +1090,19 @@ ci"> operation, which is faster but loses CR's.
 =item * -E<gt>no_cmp
 
 This attribute causes all files which exist in both src and dest areas
-to be considered modified by the I<analyze> method.
+to be considered modified by the I<analyze> method. An update will be
+forced for all such elements.
 
 =item * -E<gt>cmp_func
 
 Sets or returns the coderef that's used to compare the source and
-destination files. The default is I<File::Compare::compare()> but can be
-modifed by passing in a ref to your preferred function, like so:
+destination files. The default is I<File::Compare::compare()> but can
+be replaced with a ref to your preferred function, eg:
 
     $obj->cmp_func(\&my_compare_function);
 
-A replacement function should set C<$!> on failure.
+The function takes the names of the two files to compare. It should set
+C<$!> if a file cannot be opened.
 
 =item * -E<gt>comment
 

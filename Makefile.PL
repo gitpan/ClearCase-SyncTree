@@ -11,6 +11,7 @@ WriteMakefile(
     },
     'dist'		=> {
 	COMPRESS	=>   'gzip --force --best',
+	PREOP		=>   'pod2html synctree > SYNCTREE.html',
 	TAR		=>   'gtar',
 	TARFLAGS	=>   '--mode=u+w -cvf',
     },
