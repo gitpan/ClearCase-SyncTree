@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.10';
+$VERSION = '0.11';
 
 require 5.004;
 
@@ -15,6 +15,8 @@ use File::Path;
 use ClearCase::Argv 0.21;
 
 use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i;
+
+my $lext = '.=lnk=';	# special extension for pseudo-symlinks
 
 sub new {
     my $proto = shift;
@@ -81,6 +83,12 @@ sub protect {
     my $self = shift;
     $self->{ST_PROTECT} = shift if @_;
     return $self->{ST_PROTECT};
+}
+
+sub ctime {
+    my $self = shift;
+    $self->{ST_CTIME} = shift if @_;
+    return $self->{ST_CTIME};
 }
 
 sub comment {
@@ -230,7 +238,7 @@ sub analyze {
 	my $src = join('/', $sbase, $_);
 	$src = $_ if ! -e $src;
 	my $dst = join('/', $dbase, $self->{ST_SRCMAP}->{$_}->{dst} || $_);
-	if (! -e $dst) {
+	if (! -e $dst && ! -l $dst) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
 	} elsif (! -d $src) {
@@ -287,7 +295,7 @@ sub add {
 	    my $dad = dirname($dst);
 	    -d $dad || mkpath($dad, 0, 0777) || die "Error: $dad: $!";
 	    if (-l $src) {
-		open(SLINK, ">$dst.=lnk=") || die "Error: $$dst.=lnk=: $!";
+		open(SLINK, ">$dst$lext") || die "Error: $dst$lext: $!";
 		print SLINK readlink($src), "\n";;
 		close(SLINK);
 	    } else {
@@ -322,9 +330,10 @@ sub add {
     }
     $ct->argv('co', $self->comment, keys %dirs)->system if keys %dirs;
     # Process candidate directories here, then do files below.
+    my $mkdir = $self->clone_ct->argv({-autofail=>0}, 'mkdir', $self->comment);
     for my $cand (@candidates) {
 	if (! -d $cand) {
-	    if ($cand =~ /\.=lnk=$/) {
+	    if ($cand =~ /$lext$/) {
 		push(@symlinks, $cand);
 	    } else {
 		push(@files, $cand);
@@ -341,7 +350,7 @@ sub add {
 	    $ct->fail;
 	    next;
 	}
-	if ($ct->autofail(0)->argv('mkdir', $self->comment, $cand)->system) {
+	if ($mkdir->args($cand)->system) {
 	    rename($tmpdir, $cand);
 	    $ct->fail;
 	    next;
@@ -364,7 +373,7 @@ sub add {
 
     # Last, deal with symlinks.
     for my $symlink (@symlinks) {
-	(my $lnk = $symlink) =~ s/.=lnk=$//;
+	(my $lnk = $symlink) =~ s/$lext$//;
 	if (!open(SLINK, $symlink)) {
 	    warn "$symlink: $!";
 	    next;
@@ -514,6 +523,7 @@ sub checkin {
     my $self = shift;
     my $mbase = $self->_mkbase;
     my $dad = dirname($mbase);
+    my @ptime = qw(-pti) unless $self->ctime;
     my $ct = $self->clone_ct;
     # If special eltypes are registered, chtype them here.
     if (my %emap = $self->eltypemap) {
@@ -527,7 +537,7 @@ sub checkin {
     # Do one-by-one ci's with -from (to preserve CR's) unless
     # otherwise requested.
     if (! $self->no_cr) {
-	$ct->argv('ci', [qw(-nc -ide -pti -rm -from)]);
+	$ct->argv('ci', [qw(-nc -ide -rm -from), @ptime]);
 	for (keys %{$self->{ST_CI_FROM}}) {
 	    my $src = $self->{ST_CI_FROM}->{$_}->{src};
 	    my $dst = $self->{ST_CI_FROM}->{$_}->{dst};
@@ -538,7 +548,7 @@ sub checkin {
     my %allco = map {$_ => 1} $ct->argv('lsco', [qw(-s -cvi -a)], $mbase)->qx;
     my @co = grep m%^$mbase%, keys %allco;
     unshift(@co, $dad) if $allco{$dad} || $allco{"$dad/."};
-    $ct->argv('ci', [qw(-nc -ide -pti)], sort @co)->system if @co;
+    $ct->argv('ci', [qw(-nc -ide), @ptime], sort @co)->system if @co;
     # Fix the protections of the target files if requested.
     if ($self->protect) {
 	my %perms;
@@ -645,6 +655,12 @@ The source area may be in a VOB or may be a regular filesystem; the
 destination area must be in a VOB. Methods are supplied for adding,
 subtracting, and modifying destination files so as to make that area
 look identical to the source.
+
+Symbolic links are supported, even on Windows (of course in this case
+the source filesystem must support them, which is only likely in the
+event of an MVFS->MVFS transfer). Note that the text of the link is
+transported verbatim from source area to dest area; thus relative
+symlinks may no longer resolve in the destination.
 
 =head2 CONSTRUCTOR
 
@@ -767,6 +783,12 @@ permissions after checking in. By default this attribute is set on
 UNIX, unset on Windows. Example:
 
     $obj->protect(0);
+
+=item * ctime
+
+Sets a boolean indicating whether to throw away the timestamp of the
+source file and give modified files their checkin date instead. This
+flag is I<false> by default (i.e. checkins have I<-ptime> behavior).
 
 =item * no_cr
 

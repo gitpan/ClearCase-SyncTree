@@ -1,0 +1,22 @@
+			WHAT IT IS
+
+This is a program/module for bringing a set of files under ClearCase
+control by making the minimal set of required changes and running the
+minimal set of cleartool operations. The real code is in the module,
+but a wrapper script 'synctree' is provided for command- line access.
+Full documentation for both is provided as inline POD format.
+
+			PROVENANCE
+
+ClearCase::SyncTree is a distant descendant of Paul Smith's 'citree'
+program, which in turn is a distant descendant of a sample script by
+the same name provided with ClearCase. Though it bears no resemblance
+to Paul's any more, I retain his copyright since mine did mutate from
+his.
+
+			PLATFORM NOTE
+
+This package is believed to work on all ClearCase platforms including
+Windows. Note, however, that while the _module_ has significant Windows
+testing, the synctree wrapper script does not as I don't use it there.
+It does appear to work just fine in limited Windows testing, though.

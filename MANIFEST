@@ -1,6 +1,7 @@
 Changes
 MANIFEST
 Makefile.PL
+README
 SyncTree.pm
 synctree
 test.pl

@@ -17,3 +17,8 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Added support for symlinks. The code is designed to work
 	  even on platforms that don't natively support symlinks
 	  such as Windows (but is not yet tested there).
+
+0.11 Tue Aug  1 10:24:48 EDT 2000
+	- Fixed a bug in symlink code.
+	- "synctree -subtract" becomes "synctree -rm".
+	- Added synctree -ctime flag.

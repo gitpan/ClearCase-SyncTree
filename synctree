@@ -30,8 +30,10 @@ Flags:
    -force		Continue despite errors
    -ci			Check in changes (default is to leave co'ed)
    -cr			Checkin in such a way as to preserve CR's (slower)
-   -subtract		Remove files in dest area that aren't in src
+   -ctime		Checked in files get current time (no -ptime)
+   -rm			Remove files in dest area that aren't in src
    -label <lbtype>	Apply the specified label when done
+   -c <comment>		Use specified comment for checkins
    -ok			Show what would be done then query before proceeding
    -preview		Like -ok but exit after showing preview.
    -testdrive		Do the work, then unco it all and exit
@@ -84,7 +86,7 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s lbtype|label=s
 		     Narrow=s@
-		     help ci cr force ok preview subtract testdrive
+		     help ci cr ctime force ok preview rm testdrive
 ));
 usage() if $opt{help};
 usage("-sbase is a required flag") if !$opt{sbase};
@@ -119,6 +121,8 @@ my $sync = ClearCase::SyncTree->new;
 $sync->err_handler(0) if $opt{force};
 # Specify the comment to attach to any changes.
 $sync->comment($opt{comment} || $opt{comment} || "By:$0");
+# Suppress -ptime flag on checkins if requested.
+$sync->ctime(1) if $opt{ctime};
 # Tell it where the files are coming from ...
 $sync->srcbase($opt{sbase});
 # Tell it where they're going to ...
@@ -129,17 +133,17 @@ $sync->srclist(@sources);
 $sync->analyze;
 # If -preview, give a preview and exit. If -ok, ask for OK and proceed.
 if ($opt{ok} || $opt{preview}) {
-    my $changes = $sync->preview($opt{subtract});
+    my $changes = $sync->preview($opt{rm});
     exit 0 if !$opt{ok} || !$changes;
-    print "Continue with these $changes changes? [proceed] ";
-    exit 0 if <STDIN> =~ /^a/i;
+    exit 0 if system(qw(clearprompt proceed -pro),
+				"Continue with these $changes changes?");
 }
 # Create new elements in the target area.
 $sync->add;
 # Update existing files which differ between src and dest.
 $sync->modify;
 # Remove any files from dest that aren't in src, if requested.
-$sync->subtract if $opt{subtract};
+$sync->subtract if $opt{rm};
 # Optionally label the above work, including any still-checked-out files.
 $sync->label($opt{lbtype}) if $opt{lbtype};
 # Undo all work and exit if we're just going for a test drive.
@@ -151,8 +155,8 @@ $sync->eltypemap('\.xml$' => 'compressed_file');
 $sync->err_handler(0);
 # Prompt the user before checkin if -ok in use.
 if ($opt{ok} && !$opt{ci}) {
-    print "Checkin all changes? [proceed] ";
-    $opt{ci} = 1 if <STDIN> !~ /^a/i;
+    $opt{ci} = 1 if !system(qw(clearprompt proceed -pro),
+						    "Check in all changes?");
 }
 # Now check in the changes: one at a time if -cr, otherwise
 # all at once.
@@ -194,8 +198,8 @@ products upon previous ones, or similar.
 The default operation is to mkelem all files which exist in
 I<E<lt>srcE<gt>> but not in I<E<lt>destE<gt>>, modify any files which
 exist in both but differ, but B<not> to remove files which are present
-in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-subtract>
-flag will cause this removal to happen too.
+in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-rm> flag will
+cause this removal to happen too.
 
 This script must run in a view context; the branching rules of any
 checkouts it does will be governed by that config spec.  Also, the
@@ -212,6 +216,10 @@ File paths may be given as relative or absolute; all filenames are
 turned into absolute paths, then the path given with the I<-sbase>
 parameter is removed and replaced with that of I<-dbase> to produce the
 destination pathname.
+
+Symbolic links are supported, even on Windows.  Note that the text of
+the link is transported verbatim from source area to dest area; thus
+relative symlinks may no longer resolve in the destination.
 
 Consider using the I<-preview>, I<ok>, or I<-testdrive> flags the first
 time you use this on a valued VOB, even though nothing irreversible is
