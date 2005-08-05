@@ -342,19 +342,20 @@ synctree - Normalize a tree of flat files with a tree of ClearCase elements
   synctree -sbase /tmp/newcode -dbase /vobs_tps/xxx
 
 Take all files located under /tmp/newcode, remove the leading
-"/tmp/newcode", from each of their pathnames, and place the remaining
-relative paths under "/vobs_tps/xxx" as versioned elements.
+"/tmp/newcode" from each of their pathnames, and place the remaining
+relative paths under "/vobs_tps/xxx" as versioned elements, leaving
+them checked out.
 
   synctree -cr -yes -ci -sbase /vobs/hpux/bin -dbase /vobs_rel/hpux/bin
 
 Sync all files under "/vobs_rel/hpux/bin" with those in
-"/vobs/hpux/bin", making sure to preserve their CR's. Suppress all
-interactive prompting.
+"/vobs/hpux/bin", making sure to preserve their CR's. Suppress
+interactive prompting and check in all work when done.
 
   synctree -sb /A/B -db /X/Y -map /A/B/foo /X/Y/bar /A/B/here /X/Y/there
 
 Take 'foo' from directory /A/B and check it in as 'bar' in /X/Y.
-Similarly for 'here' and 'there'.
+Similarly, create an element /X/Y/there with the contents of /A/B/here.
 
 =head1 DESCRIPTION
 
@@ -370,15 +371,16 @@ preserving config records (CR's) and labels, or similar.
 The default operation is to mkelem all files which exist in
 I<E<lt>srcE<gt>> but not in I<E<lt>destE<gt>>, modify any files which
 exist in both but differ, but B<not> to remove files which are present
-in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  The I<-rmname> flag
-will cause this removal to happen as well.
+in I<E<lt>destE<gt>> and not in I<E<lt>srcE<gt>>.  Adding the
+I<-rmname> flag will cause this removal to happen as well and thus make
+the I<E<lt>srcE<gt>> and I<E<lt>destE<gt>> areas identical.
 
-Synctree need not run in a view context but the directory named by the
-I<-dbase> flag must provide a view context. The branching behavior of
-any checkouts performed will be governed by that view's config spec.
-The I<-dbase> directory need not exist, as long as it lies under a
-mounted VOB tag and in a view context. In other words, synctree can
-auto-create the destination directory tree.
+Synctree need not run in a view context itself but the directory named
+by the I<-dbase> flag must provide a view context. The branching
+behavior of any checkouts performed will be governed by that view's
+config spec.  The I<-dbase> directory need not exist, as long as it
+lies under a mounted VOB tag and in a view context. In other words,
+synctree can auto-create the destination directory tree.
 
 The list of source files to operate on may be provided with the
 I<-flist> option or it may come from C<@ARGV>. Any directories
@@ -393,7 +395,7 @@ I<-sbase> parameter is removed and replaced with the value of I<-dbase>
 to produce the destination pathname (but see FILE MAPPING below).
 
 ClearCase symbolic links are supported, even on Windows.  Note that the
-text of the link is transported I<verbatim> from source area to dest
+text of the link is transported B<verbatim> from source area to dest
 area; thus relative symlinks may no longer resolve in the destination
 area.
 
@@ -414,7 +416,7 @@ summary.
 
 By default, upon encountering a ClearCase error synctree will attempt
 to return to the initial state by undoing all checkouts etc. The
-I<-stop> flag will cause it to exit immediately leaving the current
+I<-stop> flag will cause it to exit immediately leaving the partial
 state intact while I<-force> will cause it to blunder onward, ignoring
 errors. However, even with I<-force> a nonzero status is returned if
 errors are encountered.
@@ -428,7 +430,7 @@ synctree to continue in this situation. As the flag name implies it
 will B<ignore> these checkouts; i.e. differences in the source base
 will I<not> overwrite the checked-out file in the destination.  The
 I<-overwrite_co> flag also allows synctree to proceed in the presence
-of existing checkouts but allows them to be overwritten by the source
+of existing checkouts but causes them to be overwritten by the source
 version.
 
 =item * I<-no, -yes, -ci>
@@ -443,9 +445,9 @@ prompting you must use both I<-yes> and I<-ci>.
 
 The I<-label> option let you specify a label to be applied before
 finishing. By default it will label recursively from the I<-dbase> area
-down, as well as all parent directories upward to the vob root.
-However, if the I<-lbmods> flag is used in conjunction only modified
-elements will be labeled.
+down, as well as all parent directories upward to the vob root.  But if
+the I<-lbmods> flag is used as well, only modified elements will be
+labeled.
 
 =item * I<-reuse>
 
@@ -471,10 +473,10 @@ B<experimental>.>
 
 The I<-Narrow> flag allows a regular expression to limit the files
 from the source list which are compared with the destination base.
-I.e. if you want to transport all the C<*.class> files from a
-dir tree without the source files you can use
+I.e. if you want to transport all the C<*.java> files from a
+dir tree without the class files you can use
 
-    synctree -N '\.class\$' ...
+    synctree -N '\.java\$' ...
 
 Note that the argument is a Perl regular expression, not a file glob.
 Any legal Perl RE may be used. Also, multiple I<-Narrow> flags may be
@@ -500,7 +502,7 @@ be pretty confusing and thus deserve special treatment here.
 Filename mapping is enabled with the B<-map> flag.  Without I<-map>, a
 list of files provided on the command line is interpreted as a set of
 I<from> files; their I<to> paths are derived via I<s/^sbase/dbase/> and
-thus the file basenames do not change.  In the presence of I<-map> the
+thus the file basenames cannot change.  In the presence of I<-map> the
 @ARGV is instead interpreted as a hash alternating B<from> and B<to>
 names.  Thus
 
@@ -549,13 +551,13 @@ option for limiting the set of files to transfer.
 
 =item *
 
-Synctree is built on a documented API (B<ClearCase::SyncTree>) which
-may aid custom tool development in Perl whereas clearfsimport is a
-command-line interface only.
+Synctree is built on a documented API (B<ClearCase::SyncTree>) which is
+available for custom tool development in Perl, whereas clearfsimport is
+a command-line interface only.
 
 =item *
 
-Synctree has support for I<element retention>. I.e. if an element is
+Synctree has support for I<element reuse>. I.e. if an element is
 added in one pass and removed (rmnamed) in a subsequent pass, and if a
 third pass would make another element of the same name, synctree can
 optionally (I<-reuse>) make a link to the existing file instead of

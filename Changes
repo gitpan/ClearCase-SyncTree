@@ -150,5 +150,8 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.38 Sat Jun 19 13:37:31 EDT 2004
 	- Fixed bug with explicit -flist option on Windows involving
-	  incorrect canoncalization of paths (/-vs\). Fix supplied
+	  incorrect canonification of paths (/-vs-\). Fix supplied
 	  by David Darby.
+
+0.39 Thu Aug  4 07:21:25 EDT 2005
+	- Applied Windows bugfix supplied by "Hans" via rt.cpan.org.

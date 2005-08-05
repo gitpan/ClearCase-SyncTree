@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.38';
+$VERSION = '0.39';
 
 require 5.004;
 
@@ -289,7 +289,7 @@ sub dstbase {
 	    # still then look that up in lsvob to get the tag case right.
 	    if (MSWIN) {
 		my @vobs = $ct->lsvob(['-s'])->qx;
-		my $dirpart = (File::Spec->splitpath($dbase))[1];
+		my $dirpart = (File::Spec->splitpath($dbase, 1))[1];
 		for my $name (File::Spec->splitdir($dirpart)) {
 		    last if $dvob;
 		    next unless $name;
