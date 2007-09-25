@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.39';
+$VERSION = '0.40';
 
 require 5.004;
 
@@ -30,12 +30,13 @@ sub new {
 	return Clone::clone($proto);
     }
     $class = $proto;
-    my $self = {};
+    my $self = {dbglevel => 0, @_};
     bless $self, $class;
     $self->comment('By:' . __PACKAGE__);
     # Default is to sync file modes unless on ^$%#* Windows.
     $self->protect(1);
     # Set up a ClearCase::Argv instance with the appropriate attrs.
+    ClearCase::Argv->dbglevel($self->{dbglevel});
     $self->ct;
     # By default we'll call SyncTree->fail on any cleartool error.
     $self->err_handler($self, 'fail');
@@ -525,7 +526,9 @@ sub analyze {
 	$src = $_ if ! -e $src && (MSWIN || ! -l $src);
 	my $dst = join('/', $dbase, $self->{ST_SRCMAP}->{$_}->{dst} || $_);
 	# It's possible for a symlink to not satisfy -e if it's dangling.
-	if (! -e $dst && ! -l $dst) {
+	# Case-insensitive file test operators are a problem on Windows.
+	# You cannot modify files when they don't exist under the proper name.
+	if (! ecs($dst) && ! -l $dst) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
 	} elsif (! -d $src) {
@@ -708,8 +711,9 @@ sub add {
 	    for (@vtree) {
 		next unless m%(\d+)$% && $1 > 0;	# optimization
 		my $dirext = "$_/$name@@/main";
+		# case-insensitive file test operator on Windows is a problem
 		if ($snapview ? $ds->args($dirext)->qx !~ /Error:/ :
-							-e $dirext) {
+							ecs("$_/$name")) {
 		    $reused{$elem} = 1;
 		    delete $files{$elem};
 		    unlink($elem);
@@ -1029,6 +1033,31 @@ sub version {
     my $self = shift;
     return $ClearCase::SyncTree::VERSION;
 }
+
+# Here 'ecs' means Exists Case Sensitive. We don't generally
+# want the case-insensitive file test operators on Windows.
+# The underlying problem is that cleartool is always case
+# sensitive. I.e. you can mkelem 'Foo' and then open 'foo'
+# if you have the right MVFS settings, but you cannot check
+# out or describe 'foo', only 'Foo'.
+# This could lead to other problems on Windows though, since you
+# may create evil twins if you subtract an old name and
+# then add it under a name which differs only by case.  But at
+# least that does work, whereas trying to checkout a path
+# with the wrong case does not work at all.  Let the evil twin
+# trigger handle the evil twin scenario.
+sub ecs {
+    my $file = shift;
+    my $rc = -e $file;
+    if (MSWIN) {
+	if (opendir DIR, dirname($file)) {
+	    my $match = basename($file);
+	    $rc = 1 if grep m%^$match$%, readdir DIR;
+	    closedir DIR;
+	}
+    }
+    return $rc;
+}    
 
 1;
 

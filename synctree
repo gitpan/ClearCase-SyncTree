@@ -503,14 +503,14 @@ Filename mapping is enabled with the B<-map> flag.  Without I<-map>, a
 list of files provided on the command line is interpreted as a set of
 I<from> files; their I<to> paths are derived via I<s/^sbase/dbase/> and
 thus the file basenames cannot change.  In the presence of I<-map> the
-@ARGV is instead interpreted as a hash alternating B<from> and B<to>
-names.  Thus
+arguments are instead interpreted as a hash alternating B<from> and
+B<to> names.  Thus
 
   synctree -sb /etc -db /vobs_st/etc /etc/passwd /etc/group
 
 would make two files under /vobs_st/etc called passwd and group, whereas
 
-  synctree -sb /etc -db /vobs_st/etc B<-map> /etc/passwd /vobs_st/etc/foo
+  synctree -sb /etc -db /vobs_st/etc -map /etc/passwd /vobs_st/etc/foo
 
 would create one file (/vobs_st/etc/foo) which is a copy of /etc/passwd.
 Alternatively the mapping may be specified with a literal B<=E<gt>>:
@@ -541,7 +541,7 @@ first supported in CC 4.2.
 
 =item *
 
-Synctree is capable of preserving CR's during C<MVFS->MVFS> transfers
+Synctree is capable of preserving CR's during C<MVFS-E<gt>MVFS> transfers
 whereas clearfsimport always treats the source area as flat files.
 
 =item *

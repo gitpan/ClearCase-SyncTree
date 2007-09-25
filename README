@@ -60,23 +60,27 @@ same name, synctree can optionally (with the -reuse flag) link to the
 existing element instead of creating what might be considered an "evil
 twin".
 
-6. And of course SyncTree is freeware, with all the attendant
-advantages (fix it yourself) and disadvantages (fix it yourself) of
-freeware.
+6. Clearfsimport has an unfortunate behavior relating to timestamps and
+repeated imports and -nsetevent; see this URL:
+<http://www.cmcrossroads.com/cgi-bin/cmwiki/view/CM/BccFaq1_2_16> for
+details.
+
+7. And of course SyncTree is freeware, with all the attendant
+advantages (fix it yourself) and disadvantages (fix it yourself).
 
 But in most cases a supported, integrated solution is to be preferred
 and clearfsimport also has advantages over synctree which aren't
 discussed in depth here, such as mastership handling (-master) and the
 ability to go somewhat deeper into the database than an aftermarket
 tool can (see -nsetevent).  And of course it doesn't require you to
-have a modern (5.6.0+) Perl plus various modules installed. See the
-clearfsimport documentation for details.
+have various Perl modules installed. See the clearfsimport
+documentation for its details.
 
 			PLATFORM NOTES
 
 This package is believed to work on all ClearCase platforms including
 Windows. Note, however, that my only test environments are Solaris 9
-and Windows 2000, Perl 5.8.0. It worked on Solaris 7 and NT 4.0 wth
+and Windows XP, Perl 5.8.x. It worked on Solaris 7 and NT 4.0 wth
 Perl 5.6.0 when I last worked there but I have no way to check these or
 any other platforms now.
 

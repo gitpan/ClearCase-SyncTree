@@ -155,3 +155,8 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.39 Thu Aug  4 07:21:25 EDT 2005
 	- Applied Windows bugfix supplied by "Hans" via rt.cpan.org.
+
+0.40 Tue Sep 25 11:33:20 EDT 2007
+	- Spelling/formatting fixes contributed by Marc Girod.
+	- Fixes for case-sensitivity issues on Windows contributed
+	  by James Anderson.

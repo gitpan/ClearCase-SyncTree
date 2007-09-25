@@ -185,13 +185,13 @@ be pretty confusing and thus deserve special treatment here.</p>
 list of files provided on the command line is interpreted as a set of
 <em>from</em> files; their <em>to</em> paths are derived via <em>s/^sbase/dbase/</em> and
 thus the file basenames cannot change.  In the presence of <em>-map</em> the
-@ARGV is instead interpreted as a hash alternating <strong>from</strong> and <strong>to</strong>
-names.  Thus</p>
+arguments are instead interpreted as a hash alternating <strong>from</strong> and
+<strong>to</strong> names.  Thus</p>
 <pre>
   synctree -sb /etc -db /vobs_st/etc /etc/passwd /etc/group</pre>
 <p>would make two files under /vobs_st/etc called passwd and group, whereas</p>
 <pre>
-  synctree -sb /etc -db /vobs_st/etc B&lt;-map&gt; /etc/passwd /vobs_st/etc/foo</pre>
+  synctree -sb /etc -db /vobs_st/etc -map /etc/passwd /vobs_st/etc/foo</pre>
 <p>would create one file (/vobs_st/etc/foo) which is a copy of /etc/passwd.
 Alternatively the mapping may be specified with a literal <strong>=&gt;</strong>:</p>
 <pre>
@@ -217,7 +217,7 @@ Synctree works with all ClearCase versions whereas clearfsimport is
 first supported in CC 4.2.
 <p></p>
 <li></li>
-Synctree is capable of preserving CR's during <code>MVFS-</code>MVFS&gt; transfers
+Synctree is capable of preserving CR's during <code>MVFS-&gt;MVFS</code> transfers
 whereas clearfsimport always treats the source area as flat files.
 <p></p>
 <li></li>
