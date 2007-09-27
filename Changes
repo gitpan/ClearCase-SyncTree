@@ -160,3 +160,6 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- Spelling/formatting fixes contributed by Marc Girod.
 	- Fixes for case-sensitivity issues on Windows contributed
 	  by James Anderson.
+
+0.41 Thu Sep 27 16:48:13 EDT 2007
+	- Previous fix was a little wrong on Windows.

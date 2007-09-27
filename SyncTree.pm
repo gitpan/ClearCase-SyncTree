@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.40';
+$VERSION = '0.41';
 
 require 5.004;
 
@@ -1048,13 +1048,15 @@ sub version {
 # trigger handle the evil twin scenario.
 sub ecs {
     my $file = shift;
-    my $rc = -e $file;
+    my $rc = 0;
     if (MSWIN) {
 	if (opendir DIR, dirname($file)) {
 	    my $match = basename($file);
 	    $rc = 1 if grep m%^$match$%, readdir DIR;
 	    closedir DIR;
 	}
+    } else {
+	$rc = -e $file;
     }
     return $rc;
 }    
