@@ -47,6 +47,7 @@ Flags:
    -no			Exit after showing a preview
    -yes			Perform all work (except checkin) without prompting
    -nprotect		Turn off "cleartool protect -chmod" phase
+   -rellinks            Turn absolute symlinks within sbase into relative ones
    -reuse		Attempt to reuse existing elements of same name
    -summary 		Print a summary of cleartool activities when done
    -verbose <n>		Set to 0 for least verbosity, 2 for most (default=1)
@@ -123,7 +124,7 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s label|mklabel=s lbmods map
 		     Narrow=s@
-		     ci cr ctime follow force reuse rmname stop
+		     ci cr ctime follow force reuse rellinks rmname stop
 		     ignore_co overwrite_co
 		     help no ok quiet yes
 		     summary verbose=i vp Version
@@ -161,6 +162,7 @@ if (!exists($opt{verbose}) || $opt{verbose} == 1) {
     ClearCase::Argv->dbglevel(1);
 }
 
+ClearCase::Argv->ipc(1) unless ClearCase::Argv->ctcmd(1);
 # Create the object we'll be working with.
 my $sync = ClearCase::SyncTree->new;
 
@@ -273,6 +275,8 @@ $sync->srcbase($opt{sbase});
 $sync->srcmap(%xfer);
 # Prep the object to think about doing some rmnames if requested.
 $sync->remove(1) if $opt{rmname};
+# Remember to fix absolute symlinks
+$sync->rellinks(1) if $opt{rellinks};
 
 #########################################################################
 # Now the object knows what it needs to do. Begin the 'action' methods
@@ -394,10 +398,10 @@ absolute paths if necessary, then the source preface given with the
 I<-sbase> parameter is removed and replaced with the value of I<-dbase>
 to produce the destination pathname (but see FILE MAPPING below).
 
-ClearCase symbolic links are supported, even on Windows.  Note that the
-text of the link is transported B<verbatim> from source area to dest
-area; thus relative symlinks may no longer resolve in the destination
-area.
+ClearCase symbolic links are supported, even on Windows.  Note that,
+unless you use the I<-rellinks> flag, the text of the link is
+transported B<verbatim> from source area to dest area; thus relative
+symlinks may no longer resolve in the destination area.
 
 Consider using the I<-n> flag the first time you use this on a valued
 VOB, even though nothing irreversible (I<rmelem>, I<rmbranch>,

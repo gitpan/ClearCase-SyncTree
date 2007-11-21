@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.41';
+$VERSION = '0.47';
 
 require 5.004;
 
@@ -394,6 +394,12 @@ sub cmp_func {
     return $self->{ST_CMP_FUNC};
 }
 
+sub rellinks {
+    my $self = shift;
+    $self->{ST_RELLINKS} = shift if @_;
+    return $self->{ST_RELLINKS};
+}
+
 sub srclist {
     my $self = shift;
     my $type = ref($_[0]) ? ${shift @_} : 'NORMAL';
@@ -504,6 +510,22 @@ sub _needs_update {
     }
 }
 
+sub checkcs {
+    my $self = shift;
+    my($dest) = @_;
+    my $ct = $self->clone_ct;
+    my $pwd;
+    if (ClearCase::Argv->ipc() or ClearCase::Argv->ctcmd()) {
+	$ct->stdout(0)->argv('cd', $dest)->system;
+    } else {
+	$pwd = getcwd();
+	chdir($dest);
+    }
+    my @cs = grep /^\#\#:BranchOff: *root/, $ct->argv('catcs')->qx;
+    chdir($pwd) if $pwd;
+    return scalar @cs;
+}
+
 sub analyze {
     my $self = shift;
     my $type = ref($_[0]) ? ${shift @_} : 'NORMAL';
@@ -511,9 +533,9 @@ sub analyze {
     my $dbase = $self->dstbase;
     die "$0: Error: must specify dest base before analyzing" if !$dbase;
     die "$0: Error: must specify dest vob before analyzing" if !$self->dstvob;
-    $self->snapdest(1) if ! -e "$dbase@@/main" && ! -e "$dbase/@@/main";
+    $self->snapdest(1) if ! -e "$dbase@@" && ! -e "$dbase/@@";
     $self->_mkbase;
-    my $ct = $self->clone_ct({-autochomp=>0});
+    $self->{branchoffroot} = $self->checkcs($dbase);
     # Derive the add and modify lists by traversing the src map and
     # comparing src/dst files.
     delete $self->{ST_ADD};
@@ -604,6 +626,81 @@ sub preview {
     return $total;
 }
 
+sub pbrtype {
+    my $self = shift;
+    my $bt = shift;
+    my $ct = $self->clone_ct;
+    my $base = $self->dstbase;
+    if (!defined($self->{ST_PBTYPES}->{$bt})) {
+	my $tc = $ct->argv('des', qw(-fmt \%[type_constraint]p),
+			   "brtype:$bt\@$base")->qx;
+	$self->{ST_PBTYPES}->{$bt} = ($tc =~ /one version per branch/);
+    }
+    return $self->{ST_PBTYPES}->{$bt};
+}
+
+sub branchco {
+    my $self = shift;
+    my $dir = shift;
+    my @ele = @_;
+    my $ct = $self->clone_ct;
+    my $rc;
+    if ($self->{branchoffroot}) {
+	foreach my $e (@ele) {
+	    my $sel = $ct->argv('ls', '-d', "$e")->qx;
+	    if ($sel =~ /^(.*?) +Rule:.*-mkbranch (.*?)\]?$/) {
+		my ($ver, $bt) = ($1, $2);
+		my $main = ($ct->argv('lsvtree', $e)->qx)[0];
+		chomp($main);
+		$main =~ s%^[^@]*\@\@[\\/](.*)\r?$%$1%;
+		my $re = $self->pbrtype($bt) ?
+		  qr([\\/]${main}[\\/]$bt[\\/]\d+$) : qr([\\/]$bt[\\/]\d+$);
+		if ($ver =~ m%$re%) {
+		    $rc |= $ct->argv('co', $self->comment, "$e")->system;
+		} else {
+		    my $r = $ct->argv('mkbranch', $self->comment,
+				      '-ver', "/${main}/0", $bt, "$e")->system;
+		    if ($r) {
+			$rc = 1;
+		    } else {
+			if ($ver !~ m%\@\@[\\/]${main}[\\/]0$%) {
+			    $rc |= $dir ?
+				$ct->argv('merge', '-to', $e, $ver)->system :
+				$ct->argv('merge', '-ndata', '-to', $e,
+					  $ver)->system;
+			}
+		    }
+		}
+	    } else {
+		$rc |= $ct->argv('co', $self->comment, "$e")->system;
+	    }
+	}
+    } else {
+	$rc = $ct->argv('co', $self->comment, @ele)->system;
+    }
+    return $rc;
+}
+
+sub mkrellink {
+    my ($self, $src) = @_;
+    my $txt = readlink($src);
+    my $sbase = $self->srcbase;
+    return $txt unless $self->{ST_RELLINKS} and ($txt =~ /^$sbase/);
+    $txt =~ s%^$sbase/(.*)%$1%;
+    $src =~ s%^$sbase/(.*)%$1%;
+    my @t = split m%/%, $txt;
+    my @s = split m%/%, $src;
+    my $i = 0;
+    while ($t[$i] eq $s[$i]) {
+	$i++;
+	shift @t;
+	shift @s;
+    }
+    while ($i++ < $#s) { unshift @t, '..'; }
+    $txt = join '/', @t;
+    return $txt;
+}
+
 sub add {
     my $self = shift;
     my $sbase = $self->srcbase;
@@ -620,7 +717,7 @@ sub add {
 	    -d $dad || mkpath($dad, 0, 0777) || die "$0: Error: $dad: $!";
 	    if (-l $src) {
 		open(SLINK, ">$dst$lext") || die "$0: Error: $dst$lext: $!";
-		print SLINK readlink($src), "\n";;
+		print SLINK $self->mkrellink($src), "\n";;
 		close(SLINK);
 	    } else {
 		copy($src, $dst) || die "$0: Error: $_: $!";
@@ -631,7 +728,7 @@ sub add {
 	    }
 	} elsif (-l $src) {
 	    open(SLINK, ">$dst$lext") || die "$0: Error: $dst$lext: $!";
-	    print SLINK readlink($src), "\n";;
+	    print SLINK $self->mkrellink($src), "\n";;
 	    close(SLINK);
 	} else {
 	    warn "$0: Error: $src: no such file or directory\n";
@@ -656,7 +753,7 @@ sub add {
 	$dad =~ s%\\%/%g if MSWIN;
 	$dirs{$dad}++;
     }
-    $ct->argv('co', $self->comment, keys %dirs)->system if keys %dirs;
+    $self->branchco(1, keys %dirs) if keys %dirs;
     # Process candidate directories here, then do files below.
     my $mkdir = $self->clone_ct->argv({-autofail=>0}, 'mkdir', $self->comment);
     for my $cand (@candidates) {
@@ -710,7 +807,7 @@ sub add {
 	    chomp(my @vtree = reverse $vt->args($dir)->qx);
 	    for (@vtree) {
 		next unless m%(\d+)$% && $1 > 0;	# optimization
-		my $dirext = "$_/$name@@/main";
+		my $dirext = "$_/$name@@";
 		# case-insensitive file test operator on Windows is a problem
 		if ($snapview ? $ds->args($dirext)->qx !~ /Error:/ :
 							ecs("$_/$name")) {
@@ -789,7 +886,7 @@ sub modify {
 	    my $dst = $self->{ST_MOD}->{$_}->{dst};
 	    push(@toco, $dst) if !exists($self->{ST_PRE}->{$dst});
 	}
-	$co->args(@toco)->system if @toco;
+	$self->branchco(0, @toco) if @toco;
 	for (@files) {
 	    my $src = $self->{ST_MOD}->{$_}->{src};
 	    my $dst = $self->{ST_MOD}->{$_}->{dst};
@@ -810,11 +907,11 @@ sub modify {
 	$ln->opts('-s', $ln->opts);
 	my $rm = $co->clone->prog('rmname');
 	for (@symlinks) {
-	    my $txt = readlink $self->{ST_MOD}->{$_}->{src};
+	    my $txt = $self->mkrellink($self->{ST_MOD}->{$_}->{src});
 	    my $lnk = $self->{ST_MOD}->{$_}->{dst};
 	    my $dad = dirname($lnk);
 	    if (!$checkedout{$dad}) {
-		$checkedout{$dad} = 1 if ! $co->args($dad)->system;
+		$checkedout{$dad} = 1 if ! $self->branchco(1, $dad);
 	    }
 	    $rm->args($lnk)->system;
 	    $ln->args($txt, $lnk)->system;
@@ -829,10 +926,10 @@ sub subtract {
     my %checkedout = map {$_ => 1} $self->_lsco;
     my @exfiles = @{$self->{ST_SUB}->{exfiles}};
     my %dirs = %{$self->{ST_SUB}->{dirs}};
-    my $r_cmnt = $self->comment;
     for my $dad (map {dirname($_)} @exfiles) {
-	$ct->argv('co', $r_cmnt, $dad)->system if !$checkedout{$dad}++;
+	$self->branchco(1, $dad) if !$checkedout{$dad}++;
     }
+    my $r_cmnt = $self->comment;
     $ct->argv('rmname', $r_cmnt, @exfiles)->system if @exfiles;
     my @exdirs;
     while (1) {
@@ -847,7 +944,7 @@ sub subtract {
 	}
 	last if !@exdirs;
 	for my $dad (map {dirname($_)} @exdirs) {
-	    $ct->argv('co', $r_cmnt, $dad)->system if !$checkedout{$dad}++;
+	    $self->branchco(1, $dad) if !$checkedout{$dad}++;
 	}
 	if (my @co = $ct->argv('lsco', [qw(-s -cvi -d)], @exdirs)->qx) {
 	    $ct->argv('ci', $r_cmnt, @co)->system;
@@ -1327,6 +1424,22 @@ overridden at creation time. Example:
 
 =back
 
+=head2 Support for the BranchOff feature.
+
+BranchOff is a feature you can set up via an attribute in your config
+spec.  The rationale and the design are documented in:
+
+ http://www.cmcrossroads.com/cgi-bin/cmwiki/view/CM/BranchOffMain0
+
+Instead of branching off the selected version, the strategy is to
+branch off the root of the version tree, copy-merging there from the
+former.
+
+This allows to avoid both merging back to /main or to a delivery
+branch, and to cascade branches indefinitely.  The logical version tree
+is restituted by navigating the merge arrows, to find all the direct or
+indirect contributors.
+
 =head1 BUGS
 
 =over 4
@@ -1401,6 +1514,9 @@ shell script 'citree' delivered as sample code with ClearCase.
 Rewritten for Unix/Win32 portability by David Boyce in 8/1999, then
 reorganized into a module in 1/2000. This module no longer bears the
 slightest resemblance to any version of citree.
+
+Support for branching off the root of the version tree (usually, /main/0)
+added by Marc Girod.
 
 =head1 COPYRIGHT
 

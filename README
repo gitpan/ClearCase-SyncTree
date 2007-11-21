@@ -65,7 +65,12 @@ repeated imports and -nsetevent; see this URL:
 <http://www.cmcrossroads.com/cgi-bin/cmwiki/view/CM/BccFaq1_2_16> for
 details.
 
-7. And of course SyncTree is freeware, with all the attendant
+7. SyncTree supports branching off the root of the version tree
+instead of from the selected version, as driven by the BranchOff view
+attribute in the config spec. Clearfsimport cannot be made to respect
+this strategy.
+
+8. And of course SyncTree is freeware, with all the attendant
 advantages (fix it yourself) and disadvantages (fix it yourself).
 
 But in most cases a supported, integrated solution is to be preferred
@@ -80,7 +85,7 @@ documentation for its details.
 
 This package is believed to work on all ClearCase platforms including
 Windows. Note, however, that my only test environments are Solaris 9
-and Windows XP, Perl 5.8.x. It worked on Solaris 7 and NT 4.0 wth
+and Windows XP, Perl 5.8.x. It worked on Solaris 7 and NT 4.0 with
 Perl 5.6.0 when I last worked there but I have no way to check these or
 any other platforms now.
 

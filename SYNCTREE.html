@@ -84,10 +84,10 @@ determined as follows: all source filenames are first turned into
 absolute paths if necessary, then the source preface given with the
 <em>-sbase</em> parameter is removed and replaced with the value of <em>-dbase</em>
 to produce the destination pathname (but see FILE MAPPING below).</p>
-<p>ClearCase symbolic links are supported, even on Windows.  Note that the
-text of the link is transported <strong>verbatim</strong> from source area to dest
-area; thus relative symlinks may no longer resolve in the destination
-area.</p>
+<p>ClearCase symbolic links are supported, even on Windows.  Note that,
+unless you use the <em>-rellinks</em> flag, the text of the link is
+transported <strong>verbatim</strong> from source area to dest area; thus relative
+symlinks may no longer resolve in the destination area.</p>
 <p>Consider using the <em>-n</em> flag the first time you use this on a valued
 VOB, even though nothing irreversible (<em>rmelem</em>, <em>rmbranch</em>,
 <em>rmver</em>, <em>rmtype</em>, etc.) is <strong>ever</strong> done by synctree.  And by the
