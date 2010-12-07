@@ -7,3 +7,4 @@ SyncTree.pm
 synctree
 synctree.bat
 test.pl
+META.yml                                 Module meta-data (added by MakeMaker)

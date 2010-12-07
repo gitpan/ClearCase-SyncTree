@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.47';
+$VERSION = '0.54';
 
 require 5.004;
 
@@ -13,10 +13,10 @@ use File::Copy;
 use File::Find;
 use File::Path;
 use File::Spec 0.82;
-
-use ClearCase::Argv 1.00;
+use ClearCase::Argv 1.34 qw(chdir);
 
 use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i ? 1 : 0;
+use constant CYGWIN => $^O =~ /cygwin/i ? 1 : 0;
 
 my $lext = '.=lnk=';	# special extension for pseudo-symlinks
 
@@ -26,17 +26,16 @@ sub new {
     if ($class = ref($proto)) {
 	# Make a (deep) clone of the invoking instance
 	require Clone;
-	Clone->VERSION(0.11);	# 0.10 has a known bug
+	Clone->VERSION(0.12);	# 0.10 has a known bug
 	return Clone::clone($proto);
     }
     $class = $proto;
-    my $self = {dbglevel => 0, @_};
+    my $self = {@_};
     bless $self, $class;
     $self->comment('By:' . __PACKAGE__);
     # Default is to sync file modes unless on ^$%#* Windows.
     $self->protect(1);
     # Set up a ClearCase::Argv instance with the appropriate attrs.
-    ClearCase::Argv->dbglevel($self->{dbglevel});
     $self->ct;
     # By default we'll call SyncTree->fail on any cleartool error.
     $self->err_handler($self, 'fail');
@@ -79,6 +78,7 @@ sub warning {
 # For internal use only.  Returns the ClearCase::Argv object.
 sub ct {
     my $self = shift;
+    return $self->{ST_CT} if $self->{ST_CT};
     if (!defined(wantarray)) {
 	my $ct = ClearCase::Argv->new({-autochomp=>1, -outpathnorm=>1});
 	$ct->syxargs($ct->qxargs);
@@ -90,16 +90,10 @@ sub ct {
 # For internal use only.  Returns a clone of the ClearCase::Argv object.
 sub clone_ct {
     my $self = shift;
-    my $ct = $self->ct;
-    # Since the ct instance may have a ref back to its enclosing
-    # instance (i.e. the default error handler is st->ct->st->fail),
-    # we have a hack here to keep from cloning that.
-    my $r_handler = $ct->autofail;
-    $ct->autofail(0);
-    my $ctclone = $ct->clone(@_);
-    $ct->autofail($r_handler);
-    $ctclone->autofail($r_handler);
-    return $ctclone;
+    my $ct = $self->ct->clone(@_);
+    my $af = $self->ct->autofail;
+    $ct->autofail($af) if $af && ref($af); #Cloning doesn't share the value
+    return $ct;
 }
 
 sub protect {
@@ -118,6 +112,12 @@ sub reuse {
     my $self = shift;
     $self->{ST_REUSE} = shift if @_;
     return $self->{ST_REUSE};
+}
+
+sub vreuse {
+    my $self = shift;
+    $self->{ST_VREUSE} = shift if @_;
+    return $self->{ST_VREUSE};
 }
 
 sub ignore_co {
@@ -166,6 +166,10 @@ sub normalize {
 	    s%^[\\/]\Q$dv%%;
 	    s%\\%/%g;
 	    $_ = "$md:/$dv$_";
+	} elsif (CYGWIN) {
+	    # 4 cases: unc; /view/x user mount; view drive; mvfs drive/tag
+	    s%^/(/?view/$dv|cygdrive/\w(/$dv)?)%%;
+	    $_ = "//view/$dv$_";
 	} else {
 	    s%^/view/$dv%%;
 	    $_ =  "/view/$dv$_";
@@ -196,8 +200,9 @@ sub _lsprivate {
 	$_ = $self->normalize($_);
 	push(@vp, $_) if m%^\Q$base/%;
     }
-    push(@vp, @{$self->{ST_IMPLICIT_DIRS}})
-				if $self->{ST_IMPLICIT_DIRS} && $implicit_dirs;
+    push(@vp, grep {$ct->des([qw(-s)], "$_/.\@\@")->stdout(0)->system}
+	   @{$self->{ST_IMPLICIT_DIRS}})
+			         if $self->{ST_IMPLICIT_DIRS} && $implicit_dirs;
     return @vp;
 }
 
@@ -206,15 +211,15 @@ sub _lsco {
     my $base = $self->dstbase;
     my $ct = $self->clone_ct;
     my %co;
-    for ($ct->argv('lsco', [qw(-s -cvi -a)], $base)->qx) {
+    for ($ct->lsco([qw(-s -cvi -a)], $base)->qx) {
 	$_ = $self->normalize($_);
 	$co{$_}++ if m%^\Q$base/% || $_ eq $base;
     }
     for my $dir (@{$self->{ST_IMPLICIT_DIRS}}) {
-	my $dirname = dirname($dir);
-	$co{$dirname}++;
+	my $dad = dirname($dir);
+	$co{$dad}++ if !$ct->lsco([qw(-s -cvi -d)], $dad)->stdout(0)->system;
     }
-    return sort keys %co;
+    return wantarray? sort keys %co : scalar keys %co;
 }
 
 sub mvfsdrive {
@@ -267,10 +272,10 @@ sub dstbase {
     if (@_) {
 	my $dbase = shift;
 	-e $dbase || mkpath($dbase, 0, 0777) || die "$0: Error: $dbase: $!";
+	my $ct = $self->clone_ct({autofail=>1, autochomp=>1});
 	my $olddir = getcwd;
-	chdir($dbase) || die "$0: Error: $dbase: $!";
+	$ct->_chdir($dbase) || die "$0: Error: $dbase: $!";
 	$dbase = getcwd;
-	my $ct = ClearCase::Argv->new({-autofail=>1, -autochomp=>1});
 	my $dv = $ct->pwv(['-s'])->qx;
 	die "$0: Error: destination base ($dbase) not in a view/VOB context"
 						if !$dv || $dv =~ m%\sNONE\s%;
@@ -324,11 +329,18 @@ sub dstbase {
 	    $dbase =~ s%.*?$dvob%$mdrive:/$dv$dvob%i;
 	} else {
 	    $dbase = getcwd;
-	    $dbase =~ s%^/view/$dv%%;
-	    $dbase = "/view/$dv$dbase";
+	    if (CYGWIN) {
+	        $dbase =~ s%^/(/?view/$dv|cygdrive/\w)%%;
+		$dbase = "//view/$dv$dbase";
+	    } else {
+	        $dbase =~ s%^/view/$dv%%;
+		$dbase = "/view/$dv$dbase";
+	    }
 	}
-	chdir($olddir) || die "$0: Error: $olddir: $!";
+	$ct->_chdir($olddir) || die "$0: Error: $olddir: $!";
 	$self->{ST_DSTBASE} = $dbase;
+	(my $dvb = $dbase) =~ s%^(.*?$dvob).*$%$1%;
+	$self->snapdest(1) unless -e "$dvb/@@";
     }
     return $self->{ST_DSTBASE};
 }
@@ -368,6 +380,12 @@ sub lbtype {
     my $self = shift;
     $self->{ST_LBTYPE} = shift if @_;
     return $self->{ST_LBTYPE};
+}
+
+sub inclb {
+    my $self = shift;
+    $self->{ST_INCLB} = shift if @_;
+    return $self->{ST_INCLB};
 }
 
 sub label_mods {
@@ -426,7 +444,7 @@ sub srcmap {
     die "$0: Error: must specify src base before src map" if !$sbase;
     die "$0: Error: must specify dst base before src map" if !$dbase;
     for (keys %sdmap) {
-	if (m%^(?:[a-zA-Z]:)?\Q$sbase\E[/\\]*(.+)$%) {
+	if (m%^(?:[a-zA-Z]:)?\Q$sbase\E[/\\]*(.*)$%) {
 	    my $key = $1;
 	    $self->{ST_SRCMAP}->{$key}->{type} = $type;
 	    my($dst) = ($sdmap{$_} =~ m%^\Q$dbase\E[/\\]*(.+)$%);
@@ -483,23 +501,65 @@ sub dstcheck {
     $self->{ST_PRE} = { map {$_ => 1} @existing };
 }
 
+# Comparator function used to implement the -vreuse option
+# If the default comparaison fails, look at versions of suitable size
+# in the version tree, and apply the comparaison to them.
+# If a suitable version is found, add it to a list of versions on which
+# to apply a label.
+sub vtcomp {
+    my($self, $src, $dst) = @_;
+    my $cmp = $self->cmp_func;
+    return 0 unless $cmp->($src, $dst);
+    my $vt = ClearCase::Argv->lsvtree([qw(-a -s -nco)]);
+    my @vt = grep {m%[\\/]\d*$%} $vt->args($dst)->qx;
+    chomp @vt;
+    my $sz = -s $src;
+    for (@vt) {
+        next if -s $_ != $sz;
+	if (!$cmp->($src, $_)) {
+	    push @{$self->{ST_LBL}}, $_;
+	    return 0;
+	}
+    }
+    return 1;
+}
+
+sub ccsymlink {
+    my $dst = shift;
+    return 1 if -l $dst;
+    return 0 unless MSWIN || CYGWIN;
+    my $ct = new ClearCase::Argv({autochomp=>1});
+    return $ct->des([qw(-fmt %m)], $dst)->qx eq 'symbolic link';
+}
+
+# readlink might work under some conditions (CC version, mount options, ...)
+sub readcclink {
+    my $dst = shift;
+    return $_ if $_ = readlink $dst;
+    return '' unless MSWIN || CYGWIN;
+    my $ct = new ClearCase::Argv({autochomp=>1});
+    my $ret = $ct->ls($dst)->qx;
+    return (($ret =~ s/^.*? --> (.*)$/$1/)? $ret : '');
+}
+
 sub _needs_update {
     my($self, $src, $dst, $comparator) = @_;
     my $update = 0;
-    if (-l $src && -l $dst) {
+    if (-l $src && ccsymlink($dst)) {
 	my $srctext = readlink $src;
-	my $desttext = readlink $dst;
+	my $desttext = readcclink $dst;
 	$update = !defined($comparator) || ($srctext ne $desttext);
-    } elsif (! -l $src && ! -l $dst) {
+    } elsif (! -l $src && ! ccsymlink($dst)) {
 	if (!defined($comparator)) {
 	    $update = 1;
+	} elsif ($self->vreuse) {
+	    $update = $self->vtcomp($src, $dst);
 	} elsif (-s $src != -s $dst) {
 	    $update = 1;
 	} else {
 	    $update = &$comparator($src, $dst);
-	    die "$0: Error: failed comparing $src vs $dst: $!"
-							if $update < 0;
 	}
+	die "$0: Error: failed comparing $src vs $dst: $!" if $update < 0;
     } else {
 	$update = 1;
     }
@@ -513,16 +573,12 @@ sub _needs_update {
 sub checkcs {
     my $self = shift;
     my($dest) = @_;
-    my $ct = $self->clone_ct;
-    my $pwd;
-    if (ClearCase::Argv->ipc() or ClearCase::Argv->ctcmd()) {
-	$ct->stdout(0)->argv('cd', $dest)->system;
-    } else {
-	$pwd = getcwd();
-	chdir($dest);
-    }
+    my $ct = ClearCase::Argv->new({-autofail=>1, -autochomp=>1});
+    my $pwd = getcwd;
+    $ct->_chdir($dest) || die "$0: Error: $dest: $!";
+    $dest = getcwd;
     my @cs = grep /^\#\#:BranchOff: *root/, $ct->argv('catcs')->qx;
-    chdir($pwd) if $pwd;
+    $ct->_chdir($pwd) || die "$0: Error: $pwd: $!";
     return scalar @cs;
 }
 
@@ -533,7 +589,6 @@ sub analyze {
     my $dbase = $self->dstbase;
     die "$0: Error: must specify dest base before analyzing" if !$dbase;
     die "$0: Error: must specify dest vob before analyzing" if !$self->dstvob;
-    $self->snapdest(1) if ! -e "$dbase@@" && ! -e "$dbase/@@";
     $self->_mkbase;
     $self->{branchoffroot} = $self->checkcs($dbase);
     # Derive the add and modify lists by traversing the src map and
@@ -550,7 +605,7 @@ sub analyze {
 	# It's possible for a symlink to not satisfy -e if it's dangling.
 	# Case-insensitive file test operators are a problem on Windows.
 	# You cannot modify files when they don't exist under the proper name.
-	if (! ecs($dst) && ! -l $dst) {
+	if (! ecs($dst) && ! ccsymlink($dst)) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
 	} elsif (! -d $src) {
@@ -574,7 +629,7 @@ sub analyze {
 	# Get a relative path from the absolute path.
 	(my $relpath = $path) =~ s%^\Q$dbase\E\W?%%;
 	if (-d $path) {
-	    $dirs{$path} = 1;
+	    $dirs{$path} = $relpath;
 	} elsif (-f $path) {
 	    $files{$relpath} = $path;
 	}
@@ -632,7 +687,7 @@ sub pbrtype {
     my $ct = $self->clone_ct;
     my $base = $self->dstbase;
     if (!defined($self->{ST_PBTYPES}->{$bt})) {
-	my $tc = $ct->argv('des', qw(-fmt \%[type_constraint]p),
+	my $tc = $ct->argv('desc', qw(-fmt \%[type_constraint]p),
 			   "brtype:$bt\@$base")->qx;
 	$self->{ST_PBTYPES}->{$bt} = ($tc =~ /one version per branch/);
     }
@@ -643,15 +698,14 @@ sub branchco {
     my $self = shift;
     my $dir = shift;
     my @ele = @_;
-    my $ct = $self->clone_ct;
+    my $ct = $self->clone_ct({autochomp=>0});
     my $rc;
     if ($self->{branchoffroot}) {
 	foreach my $e (@ele) {
-	    my $sel = $ct->argv('ls', '-d', "$e")->qx;
+	    my $sel = $ct->argv('ls', '-d', "$e")->autochomp(1)->qx;
 	    if ($sel =~ /^(.*?) +Rule:.*-mkbranch (.*?)\]?$/) {
 		my ($ver, $bt) = ($1, $2);
-		my $main = ($ct->argv('lsvtree', $e)->qx)[0];
-		chomp($main);
+		my $main = ($ct->argv('lsvtree', $e)->autochomp(1)->qx)[0];
 		$main =~ s%^[^@]*\@\@[\\/](.*)\r?$%$1%;
 		my $re = $self->pbrtype($bt) ?
 		  qr([\\/]${main}[\\/]$bt[\\/]\d+$) : qr([\\/]$bt[\\/]\d+$);
@@ -665,9 +719,11 @@ sub branchco {
 		    } else {
 			if ($ver !~ m%\@\@[\\/]${main}[\\/]0$%) {
 			    $rc |= $dir ?
-				$ct->argv('merge', '-to', $e, $ver)->system :
+				$ct->argv('merge', '-to',
+					  $e, $ver)->stdout(0)->system :
 				$ct->argv('merge', '-ndata', '-to', $e,
-					  $ver)->system;
+					  $ver)->stdout(0)->system;
+			    unlink("$e.contrib");
 			}
 		    }
 		}
@@ -701,16 +757,140 @@ sub mkrellink {
     return $txt;
 }
 
+# Remove spurious names from restored directory
+sub skimdir {
+    my ($self, $dst, $pfx) = @_;
+    my $flt = qr{^(\Q$pfx\E.*?)(?:/.*)?$}; # paths normalized
+    opendir(DIR, $dst);
+    my @f = grep !m%^\.\.?$%, readdir DIR;
+    closedir DIR;
+    my %ok = map {$_ => 1} grep s%$flt%$1%, keys %{$self->{ST_SRCMAP}};
+    for (@f) {
+	my $f = $pfx . $_;
+	push @{$self->{ST_SUB}->{exfiles}}, join('/', $dst, $_) unless $ok{$f};
+    }
+}
+
+# Reuse from removed elements, or create as view private, directories
+sub reusemkdir {
+    my ($self, $dref, $rref) = @_;
+    my (%found, $reused, %dfound);
+    my $snapview = $self->snapdest;
+    my $vt = ClearCase::Argv->lsvtree({autochomp=>1}, [qw(-a -s -nco)]);
+    my $ds = ClearCase::Argv->desc({stderr=>1},[qw(-s)]);
+    my $dm = ClearCase::Argv->desc([qw(-fmt %m)]);
+    my $rm = ClearCase::Argv->rm;
+    my $lsco = ClearCase::Argv->lsco([qw(-s -d -cview)]);
+    my $ln = ClearCase::Argv->ln;
+    for my $dst (sort keys %{$dref}) {
+	next if $dfound{$dst};
+	my($name, $dir) = fileparse($dst);
+	if ($rref->{$dst}) {
+	    $self->branchco(1, $dir) unless $lsco->args($dir)->qx;
+	    $rm->args($dst)->system;
+	}
+	my @vtree = reverse grep { m%[/\\]\d+$% } $vt->args($dir)->qx;
+      VER: for (@vtree) {
+	    my $dirext = "$_/$name";
+	    # case-insensitive file test operator on Windows is a problem
+	    if ($snapview ? $ds->args($dirext)->qx !~ /Error:/ : ecs($dirext)) {
+		next if $dm->args($dirext)->qx eq 'file element';
+		while (ccsymlink($dirext)) {
+		    $name = readcclink $dirext;
+		    $name =~ s/\@\@$//;
+		    # consider only relative, and local symlinks
+		    next VER if !ecs($dirext) ||
+		                       $dm->args($dirext)->qx eq 'file element';
+		}
+		$reused = 1;
+		$self->branchco(1, $dir) unless $lsco->args($dir)->qx;
+		$ln->args($dirext, $dst)->system;
+	        # Need to reevaluate all the files under this dir
+	        # The case of implicit dirs, is recorded as '.'
+		my $d = $dref->{$dst} eq '.'? '' : $dref->{$dst} . '/';
+		$self->skimdir($dst, $d) if $self->remove;
+		my $cmp = $self->no_cmp ? undef : $self->cmp_func;
+		my @keys = $d? grep m%^\Q$d\E%, keys %{$self->{ST_ADD}}
+		                                      : keys %{$self->{ST_ADD}};
+		for my $e (@keys) {
+		    my $edst = join '/', $self->dstbase, $e;
+		    my @intdir = split m%/%, $e;
+		    pop @intdir;
+		    if (@intdir) {
+			my $dd = $self->dstbase;
+			my $pf = $d;
+			while (my $id = shift @intdir) {
+			    $dd = join '/', $dd, $id;
+			    $pf = $pf . $id . '/';
+			    $self->skimdir($dd, $pf) unless $dfound{$dd}++;
+			}
+		    }
+		    # Problem: does it match the type under srcbase?
+		    if (-d $edst) { # We know it ought to be empty
+			opendir(DIR, $edst);
+			my @f = grep !m%^\.\.?$%, readdir DIR;
+			closedir DIR;
+			if (@f) {
+			    $self->branchco(1, $edst)
+			                          unless $lsco->args($edst)->qx;
+			    $rm->args(map{join '/', $edst, $_} @f)->system;
+			}
+			$dfound{$edst}++; #Skip in this loop
+			next;
+		    }
+		    if (exists($self->{ST_ADD}->{$e}->{dst})) {
+			my $src = $self->{ST_ADD}->{$e}->{src};
+			my $dst = $self->{ST_ADD}->{$e}->{dst};
+			if (-e $dst) {
+			    $self->{ST_MOD}->{$e} = $self->{ST_ADD}->{$e}
+			              if $self->_needs_update($src, $dst, $cmp);
+			    $found{$e}++; #Remove from the add list
+			}
+		    }
+		}
+		last;
+	    }
+	}
+	if (!$reused) {
+	    mkpath($dst, 0, 0777) || die "$0: Error: $dst: $!";
+	}
+    }
+    return %found;
+}
+
+# recursively record parent directories, and clashing objects to remove
+sub recadd {
+    my ($self, $src, $dst, $dir, $rm, $seen) = @_;
+    my $dad = dirname($dst);
+    return if $seen->{$dad}++ || (-d $dad && !ccsymlink($dad)); #exists, normal
+    my $sdad = dirname($src);
+    $self->recadd($sdad, $dad, $dir, $rm, $seen);
+    $rm->{$dad}++ if -f $dad || ccsymlink($dad); #something clashing: remove
+    $dir->{$dad} = $sdad;
+}
+
 sub add {
     my $self = shift;
     my $sbase = $self->srcbase;
     my $mbase = $self->_mkbase;
     my $ct = $self->clone_ct;
     return if ! $self->{ST_ADD};
+    if ($self->reuse) { # First, reuse parent directories
+	my (%dir, %rm, %dseen);
+	# in the way if added in _mkbase as view private; ignore failures
+	rmdir($_) for reverse sort @{$self->{ST_IMPLICIT_DIRS}};
+	for my $d (sort keys %{$self->{ST_ADD}}) {
+	    my $dst = $self->{ST_ADD}->{$d}->{dst};
+	    $dir{$dst} = $d if -d $d; # only empty dirs are explicitly added
+	    $self->recadd($d, $dst, \%dir, \%rm, \%dseen);
+	}
+	my %found = $self->reusemkdir(\%dir, \%rm);
+	delete $self->{ST_ADD}->{$_} for keys %found;
+    }
     for (sort keys %{$self->{ST_ADD}}) {
 	my $src = $self->{ST_ADD}->{$_}->{src};
 	my $dst = $self->{ST_ADD}->{$_}->{dst};
-	if (-d $src && ! -l $src) {
+	if (-d $src && ! -l $src) { # Already checked in the reuse case
 	    -e $dst || mkpath($dst, 0, 0777) || die "$0: Error: $dst: $!";
 	} elsif (-e $src) {
 	    my $dad = dirname($dst);
@@ -726,10 +906,6 @@ sub add {
 		$self->{ST_CI_FROM}->{$_} = $self->{ST_ADD}->{$_}
 					    if !exists($self->{ST_PRE}->{$dst});
 	    }
-	} elsif (-l $src) {
-	    open(SLINK, ">$dst$lext") || die "$0: Error: $dst$lext: $!";
-	    print SLINK $self->mkrellink($src), "\n";;
-	    close(SLINK);
 	} else {
 	    warn "$0: Error: $src: no such file or directory\n";
 	    $ct->fail;
@@ -742,8 +918,7 @@ sub add {
     # If the parent directories of any of the candidates are
     # already versioned, we'll need to check them out unless
     # it's already been done.
-    my %parents = map {dirname($_) => 1} @candidates;
-    my @dads = sort keys %parents;
+    my @dads = sort map {dirname($_)} @candidates;
     my %lsd = map {split(/\s+Rule:\s+/, $_, 2)}
 			$ct->argv('ls', [qw(-d -nxn -vis -vob)], @dads)->qx;
     for my $dad (keys %lsd) {
@@ -755,7 +930,8 @@ sub add {
     }
     $self->branchco(1, keys %dirs) if keys %dirs;
     # Process candidate directories here, then do files below.
-    my $mkdir = $self->clone_ct->argv({-autofail=>0}, 'mkdir', $self->comment);
+    my $mkdir = $self->clone_ct->argv({autofail=>0, autochomp=>0},
+				                      'mkdir', $self->comment);
     for my $cand (@candidates) {
 	if (! -d $cand) {
 	    if ($cand =~ /$lext$/) {
@@ -777,7 +953,7 @@ sub add {
 	}
 	if ($mkdir->args($cand)->system) {
 	    warn "Warning: unable to rename $tmpdir back to $cand!"
-						unless rename($tmpdir, $cand);
+		                                unless rename($tmpdir, $cand);
 	    $ct->fail;
 	    next;
 	}
@@ -798,19 +974,26 @@ sub add {
     if ($self->reuse) {
 	my $snapview = $self->snapdest;
 	my $vt = ClearCase::Argv->lsvtree([qw(-a -s -nco)]);
-	my $ds = ClearCase::Argv->desc([qw(-s)]);
-	$ds->stderr(1);
+	my $ds = ClearCase::Argv->desc({stderr=>1}, [qw(-s)]);
+	my $dm = ClearCase::Argv->desc([qw(-fmt %m)]);
 	my $ln = ClearCase::Argv->ln;
 	my %reused;
 	for my $elem (keys %files) {
 	    my($name, $dir) = fileparse($elem);
 	    chomp(my @vtree = reverse $vt->args($dir)->qx);
 	    for (@vtree) {
-		next unless m%(\d+)$% && $1 > 0;	# optimization
+		next unless m%[/\\](\d+)$% && $1 > 0;	# optimization
 		my $dirext = "$_/$name@@";
 		# case-insensitive file test operator on Windows is a problem
 		if ($snapview ? $ds->args($dirext)->qx !~ /Error:/ :
-							ecs("$_/$name")) {
+							    ecs("$_/$name")) {
+		    next if $dm->args("$_/$name")->qx eq 'directory element';
+		    while (ccsymlink("$_/$name")) {
+		        $name = readcclink "$_/$name";
+			$name =~ s/\@\@$//;
+			next if !ecs("$_/$name") ||
+			     $dm->args("$_/$name")->qx eq 'directory element';
+		    }
 		    $reused{$elem} = 1;
 		    delete $files{$elem};
 		    unlink($elem);
@@ -852,7 +1035,7 @@ sub add {
     }
 
     # Now do the files in one fell swoop.
-    $ct->argv('mkelem', $self->comment, sort keys %files)->system if %files;
+    $ct->mkelem($self->comment, sort keys %files)->system if %files;
 
     # Deal with symlinks.
     for my $symlink (@symlinks) {
@@ -871,28 +1054,92 @@ sub add {
 sub modify {
     my $self = shift;
     return if !keys %{$self->{ST_MOD}};
-    my(@files, @symlinks);
-    for (sort keys %{$self->{ST_MOD}}) {
+    my(%files, %symlinks);
+    for (keys %{$self->{ST_MOD}}) {
 	if (-l $self->{ST_MOD}->{$_}->{src}) {
-	    push(@symlinks, $_)
+	    $symlinks{$_}++;
 	} else {
-	    push(@files, $_)
+	    $files{$_}++;
 	}
     }
-    my $co = $self->clone_ct('co', $self->comment);
-    if (@files) {
-	my @toco;
-	for (@files) {
-	    my $dst = $self->{ST_MOD}->{$_}->{dst};
+    my $rm = $self->clone_ct('rmname');
+    my $ln = $rm->clone->prog('ln');
+    $ln->opts('-s', $ln->opts);
+    my $lsco = ClearCase::Argv->lsco([qw(-s -d -cview)]);
+    my $comparator = $self->no_cmp ? undef : $self->cmp_func;
+    if (keys %files) {
+	my (@toco, @del);
+	for my $key (sort keys %files) {
+	    my $src = $self->{ST_MOD}->{$key}->{src};
+	    my $dst = $self->{ST_MOD}->{$key}->{dst};
+	    if (ccsymlink($dst)) {
+	        # The source is a file, but the destination is a symlink: look
+	        # (recursively) at what this one points to, and link in this
+	        # file.
+	        # Build up the path of the destination, in such a way that it
+	        # may be found, or not, in the hash.
+	        use Cwd 'abs_path';
+		my $dangling;
+		my $sep = qr%[/\\]%;
+		my $dst1 = $dst;
+	        while (ccsymlink($dst1)) {
+		    my $tgt = readcclink $dst1;
+		    my $dir = dirname $dst1;
+		    $tgt = abs_path(File::Spec->catfile($dir, $tgt))
+		                                         if $tgt =~ m%^[^/\\]%;
+		    if (-e $tgt) {
+			$dst1 = $tgt;
+		    } else {
+			$dangling = 1;
+			last;
+		    }
+		}
+		my $dir = dirname($dst);
+		$self->branchco(1, $dir) unless $lsco->args($dir)->qx;
+		$self->clone_ct->rm($dst)->system; #remove the first symlink
+		if ($dangling) {
+		    if ($self->no_cr) {
+			if (!copy($src, $dst)) {
+			    warn "$0: Error: $dst: $!\n";
+			    $rm->fail;
+			}
+			utime(time(), (stat $src)[9], $dst) ||
+			                    warn "Warning: $dst: touch failed";
+			$self->clone_ct->mkelem($self->comment, $dst)->system;
+		    } else {
+			my @ptime = qw(-pti) unless $self->ctime;
+			$self->clone_ct->ci([@ptime, @{$self->comment},
+				      qw(-ide -rm -from), $src], $dst)->system;
+		    }
+		    delete $self->{ST_MOD}->{$key};
+		    push @del, $key;
+		} else {
+		    my $dir1 = dirname($dst1);
+		    $self->branchco(1, $dir1)
+		              unless ($dir eq $dir1) || $lsco->args($dir1)->qx;
+		    $self->clone_ct->mv($dst1, $dst)->system;
+		    if (!$self->_needs_update($src, $dst, $comparator)) {
+			delete $self->{ST_MOD}->{$key};
+			push @del, $key;
+		    }
+		    (my $k = $dst1) =~ s%^$self->{ST_DSTBASE}$sep%%;
+		    if ($symlinks{$k}) {
+			my $d = $self->mkrellink($self->{ST_MOD}->{$k}->{src});
+			$ln->args($d, $dst1)->system;
+			delete $symlinks{$k};
+		    }
+		}
+	    }
 	    push(@toco, $dst) if !exists($self->{ST_PRE}->{$dst});
 	}
 	$self->branchco(0, @toco) if @toco;
-	for (@files) {
+	delete @files{@del};
+	for (sort keys %files) {
 	    my $src = $self->{ST_MOD}->{$_}->{src};
 	    my $dst = $self->{ST_MOD}->{$_}->{dst};
 	    if (!copy($src, $dst)) {
 		warn "$0: Error: $dst: $!\n";
-		$co->fail;
+		$rm->fail;
 		next;
 	    }
 	    utime(time(), (stat $src)[9], $dst) ||
@@ -901,12 +1148,9 @@ sub modify {
 			if !$self->no_cr && !exists($self->{ST_PRE}->{$dst});
 	}
     }
-    if (@symlinks) {
+    if (keys %symlinks) {
 	my %checkedout = map {$_ => 1} $self->_lsco;
-	my $ln = $co->clone->prog('ln');
-	$ln->opts('-s', $ln->opts);
-	my $rm = $co->clone->prog('rmname');
-	for (@symlinks) {
+	for (sort keys %symlinks) {
 	    my $txt = $self->mkrellink($self->{ST_MOD}->{$_}->{src});
 	    my $lnk = $self->{ST_MOD}->{$_}->{dst};
 	    my $dad = dirname($lnk);
@@ -930,10 +1174,12 @@ sub subtract {
 	$self->branchco(1, $dad) if !$checkedout{$dad}++;
     }
     my $r_cmnt = $self->comment;
-    $ct->argv('rmname', $r_cmnt, @exfiles)->system if @exfiles;
+    # -force for checkedouts, in case reuse brought some hardlinks back
+    $ct->argv(qw(rmname -f), @{$r_cmnt}, @exfiles)->system if @exfiles;
     my @exdirs;
     while (1) {
 	for (sort {$b cmp $a} keys %dirs) {
+	    next if $self->{ST_SRCMAP}->{$dirs{$_}};
 	    if (opendir(DIR, $_)) {
 		my @entries = readdir DIR;
 		closedir(DIR);
@@ -959,27 +1205,37 @@ sub label {
     my $lbtype = shift || $self->lbtype;
     return unless $lbtype;
     my $dbase = $self->dstbase;
-    my $ct = $self->clone_ct;
-    my $ctq = $ct->clone({-stdout=>0});
-    my $ctbool = $ctq->clone({-autofail=>0, -stderr=>0});
+    my $ct = $self->clone_ct({autochomp=>0});
+    my $ctq = $ct->clone({stdout=>0});
+    my $ctbool = $ctq->clone({autofail=>0, stderr=>0, autochomp=>0});
+    my $dvob = $self->dstvob;
     my $locked;
-    if ($ctbool->lstype(['-s'], "lbtype:$lbtype\@$dbase")->system) {
-	$ct->mklbtype($self->comment, "lbtype:$lbtype\@$dbase")->system;
-    } else {
-	$locked = $self->clone_ct->lslock(['-s'], "lbtype:$lbtype\@$dbase")->qx;
-	$ct->unlock("lbtype:$lbtype\@$dbase")->system if $locked;
+    if ($ctbool->lstype(['-s'], "lbtype:$lbtype\@$dvob")->system) {
+	$ct->mklbtype($self->comment, "lbtype:$lbtype\@$dvob")->system;
+    } elsif (!$self->inclb) {
+	$locked = $ct->lslock(['-s'], "lbtype:$lbtype\@$dvob")->qx;
+	$ct->unlock("lbtype:$lbtype\@$dvob")->system if $locked;
     }
-    if ($self->label_mods) {
-	if (my @mods = $self->_lsco) {
-	    $ctq->mklabel([qw(-nc -rep), $lbtype], @mods)->system;
+    # Allow for labelling errors, in case of hard links: only the link
+    # recorded can be labelled, the other being seen as 'removed'
+    if ($self->label_mods || $self->inclb) {
+	my @mods = $self->_lsco;
+	push @mods, @{$self->{ST_LBL}} if $self->{ST_LBL};
+	if (@mods) {
+	    $ctbool->mklabel([qw(-nc), $self->inclb], @mods)->system
+	                                                      if $self->inclb;
+	    $ctbool->mklabel([qw(-nc -rep), $lbtype], @mods)->system;
 	}
     } else {
-	$ctq->mklabel([qw(-nc -rep -rec), $lbtype], $dbase)->system;
+	$ctbool->mklabel([qw(-nc -rep -rec), $lbtype], $dbase)->system;
+	# Possibly move the label back to the right versions
+	$ctbool->mklabel([qw(-nc -rep), $lbtype], @{$self->{ST_LBL}})->system
+	                                                   if $self->{ST_LBL};
 	# Last, label the ancestors of the destination back to the vob tag.
-	my $dvob = $self->normalize($self->dstvob);
 	my($dad, @ancestors);
+	my $min = length($self->normalize($dvob));
 	for ($dad = dirname($dbase);
-			length($dad) >= length($dvob); $dad = dirname($dad)) {
+			         length($dad) >= $min; $dad = dirname($dad)) {
 	    push(@ancestors, $dad);
 	}
 	$ctq->mklabel([qw(-rep -nc), $lbtype], @ancestors)->system
@@ -1025,7 +1281,7 @@ sub checkin {
     my $dad = dirname($mbase);
     my @ptime = qw(-pti) unless $self->ctime;
     my @cmnt = @{$self->comment};
-    my $ct = $self->clone_ct;
+    my $ct = $self->clone_ct({autochomp=>0});
     # If special eltypes are registered, chtype them here.
     if (my %emap = $self->eltypemap) {
 	for my $re (keys %emap) {
@@ -1044,6 +1300,13 @@ sub checkin {
 	    $ct->ci([@ptime, @cmnt, qw(-ide -rm -from), $src], $dst)->system;
 	}
     }
+    # Check-in first the files modified under the recorded names,
+    # in case of hardlinks, since checking the other link first
+    # in a pair would fail.
+    my @mods;
+    push @mods, $self->{ST_MOD}->{$_}->{dst} for
+       grep {!ccsymlink($self->{ST_MOD}->{$_}->{dst})} keys %{$self->{ST_MOD}};
+    $ct->ci([@cmnt, '-ide', @ptime], sort @mods)->system if @mods;
     # Check in anything not handled above.
     my %checkedout = map {$_ => 1} $self->_lsco;
     my @todo = grep {m%^\Q$mbase%} keys %checkedout;
@@ -1146,17 +1409,18 @@ sub version {
 sub ecs {
     my $file = shift;
     my $rc = 0;
-    if (MSWIN) {
+    if (MSWIN || CYGWIN) {
 	if (opendir DIR, dirname($file)) {
 	    my $match = basename($file);
-	    $rc = 1 if grep m%^$match$%, readdir DIR;
+	    # Faster than for/last when not found!
+	    $rc = 1 if grep {$_ eq $match} readdir DIR;
 	    closedir DIR;
 	}
     } else {
 	$rc = -e $file;
     }
     return $rc;
-}    
+}
 
 1;
 
@@ -1220,7 +1484,7 @@ given usage may be assumed to look like:
 
     $obj->method;
 
-=over 4
+=over 2
 
 =item * -E<gt>srcbase
 
@@ -1308,7 +1572,8 @@ vob root. Example:
 
     $obj->label('FOO');
 
-See also I<-E<gt>label_mods>.
+See also I<-E<gt>label_mods>, as well as I<Support for incremental
+label families>.
 
 =item * -E<gt>checkin
 
@@ -1357,6 +1622,14 @@ name exists in any other version. If so, assume the new file intended
 to be the same element and link the old and new names.
 
     $obj->reuse(1);
+
+=item * -E<gt>vreuse
+
+Attempt "version reuse". Instead of creating a new version, apply the
+label provided onto an old suitable one, even if it wasn't selected by
+the config spec.
+
+    $obj->vreuse(1);
 
 =item * -E<gt>ctime
 
@@ -1429,31 +1702,51 @@ overridden at creation time. Example:
 BranchOff is a feature you can set up via an attribute in your config
 spec.  The rationale and the design are documented in:
 
- http://www.cmcrossroads.com/cgi-bin/cmwiki/view/CM/BranchOffMain0
+ http://www.cmwiki.com/BranchOffMain0
 
 Instead of branching off the selected version, the strategy is to
 branch off the root of the version tree, copy-merging there from the
 former.
 
 This allows to avoid both merging back to /main or to a delivery
-branch, and to cascade branches indefinitely.  The logical version tree
-is restituted by navigating the merge arrows, to find all the direct or
-indirect contributors.
+branch, and cascadig branches indefinitely.  The logical version tree
+is restituted by navigating the merge arrows, to find all the direct
+or indirect contributors.
+
+See also I<ClearCase::Wrapper::MGi> on CPAN.
+
+=head2 Support for incremental label families
+
+I<ClearCase::Wrapper::MGi> supports managing families of incremental
+fixed label types, as lists, linked with hyperlinks. The top of a list
+is accessible as the equivalent fixed label type of a floating label
+type, which has a stable name.  This allows to move the floating
+labels, and keep track of their successive positions with sparse fixed
+labels.
+
+I<ClearCase::SyncTree> follows this strategy if the label type
+provided has an I<EqInc> hyperlink.
+
+Using an incremental type with the I<label> method, I<label_mods> is
+implicit (and ignored).
+
+=head2 Support for Cygwin
+
+VOB paths show under Cygwin with forward slashes as separators. UNC
+paths start with C<//>, and drives are presented with a C</cygdrive/>
+prefix. Cygwin also offers a C<mount> tool, allowing the user to mount
+her views under C</view>, to match the UNIX convention.
+
+The support for Cygwin normalizes the paths on the UNC syntax.
 
 =head1 BUGS
 
-=over 4
+=over 2
 
 =item *
 
 Subtraction of symlinks is currently unimplemented (it's just a little
 corner case I haven't gotten to).
-
-=item *
-
-SyncTree does not transport empty directories, and added/removed
-directories aren't shown explicitly in the list of operations to be
-performed. This is a structural artifact/flaw.
 
 =item *
 
@@ -1471,7 +1764,7 @@ possibility.
 
 Following items are from Uwe Nagler of Lucent, unverified:
 
-=over 4
+=over 2
 
 =item * Mode changes of files should be supported.
 
@@ -1515,14 +1808,16 @@ Rewritten for Unix/Win32 portability by David Boyce in 8/1999, then
 reorganized into a module in 1/2000. This module no longer bears the
 slightest resemblance to any version of citree.
 
-Support for branching off the root of the version tree (usually, /main/0)
-added by Marc Girod.
+Support for 2 features compatible with ClearCase::Wrapper::MGi
+(branching off the root of the version tree--usually, /main/0, and
+applying incremental labels), as well as for cygwin, added by Marc
+Girod.
 
 =head1 COPYRIGHT
 
 Copyright 1997,1998 Paul D. Smith and Bay Networks, Inc.
 
-Copyright 1999-2003 David Boyce (dsbperl AT boyski.com).
+Copyright 1999-2010 David Boyce (dsbperl AT boyski.com).
 
 This script is distributed under the terms of the GNU General Public License.
 You can get a copy via ftp://ftp.gnu.org/pub/gnu/ or its many mirrors.
@@ -1536,19 +1831,12 @@ the API incompatibly. At some point I'll bump the version suitably and
 remove this warning, which will constitute an (almost) ironclad promise
 to leave the interface alone.
 
-Actually, as (a) Rational has released clearfsimport and (b) I am not
-currently doing anything which requires SyncTree (or clearfsimport for
-that matter), there isn't much ongoing support for this module.
-However, it does seem to work fine and the interface hasn't changed in
-two years (!) so I guess we could call that stable. It's unclear
-whether this means stable as in "robust" or stable as in "dead".
-
 =head1 PORTING
 
-This module is known to work on Solaris 2.6-7 and Windows NT 4.0SP3-5,
-and with perl 5.004_04 and 5.6.  As these platforms cover a fairly wide
-range there should be no I<major> portability issues, but please send
-bug reports or patches to the address above.
+This module is known to work on Solaris 2.6-10 and Windows NT 4.0SP3-5
+to Vista SP2, and with perl 5.004_04 to 5.10.  As these platforms
+cover a fairly wide range there should be no I<major> portability
+issues, but please send bug reports or patches to the address above.
 
 =head1 SEE ALSO
 

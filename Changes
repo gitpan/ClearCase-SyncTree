@@ -185,3 +185,47 @@ Revision history for Perl extension ClearCase::SyncTree.
 
 0.47 Tue Nov 20 11:17:41 EST 2007
 	- Only minor cosmetic changes from previous.
+
+0.48 Mon Nov 19 17:41:09 GMT 2007
+	- Preliminary test suite
+	- Quiet 'seed merging' of new branches, with contributors removal.
+
+0.49 Sun Mar 16 12:05:12 GMT 2008
+	- Fixed: ipc mode not properly set when CtCmd not found.
+
+0.50 Thu Mar 20 11:34:29 GMT 2008
+	- Made synctree accessible to make test.
+
+0.51 Fri Mar 21 11:00:42 GMT 2008
+	- chdir unconditionally in unix and cleartool
+	- skipped the package name from ARGV in runtest
+
+0.52 Wed Mar 26 09:22:26 GMT 2008
+	- return or exit depending on call context in synctree
+	- mkview with -gpa to force local storage (global might not work)
+	- internal _chdir hides the difference introduced with the ipc mode
+	- internal ct shares the ST_CT object as much as possible
+
+0.54 Mon Dec  6 18:57:55 GMTST 2010
+	- Using Argv 1.34 - removed _chdir
+	- reuse: branch names ending in numbers
+	- reuse: symlinks or dirs with same name in lsvtree of directory
+	- vreuse option
+	- completing the processing if checkouts left (required fix to _lsco)
+	- removed the Modulino structure set in 0.50 (test strategy reverted)
+	- cygwin support
+	- clone simplified to support ipc reference counting
+	- indentation fixes in the pod parts
+	- prepend sbase to the arguments if not accessible (test first)
+	- reverted test.pl to 0.47
+	- support for incremental label families: apply fixed, move floating
+	- uncommented a change by Uwe Nagler, to import empty directories
+	- chomp control, especially in fork mode
+	- fix for args relative to current dir (bug report by Achim Bursian)
+	- do not remove empty directories
+	- reuse also attempts to reuse 'implicit dirs'
+	- snapview check the path to the vob root, in case dbase didn't exist
+	- process whole paths brought in while reusing directory elements
+	- file/symlink clashes handled
+	- clone preserves the value of autofail
+	- NOTE: all work from 0.48 to here courtesy of Marc Girod.

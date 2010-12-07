@@ -1,7 +1,7 @@
 #!/usr/local/bin/perl
 
 use Benchmark;
-use ClearCase::Argv 1.00;
+use ClearCase::Argv 1.34;
 use ClearCase::SyncTree 0.28;
 use File::Basename;
 use File::Find;
@@ -53,6 +53,7 @@ Flags:
    -verbose <n>		Set to 0 for least verbosity, 2 for most (default=1)
    -Narrow [!]<re>	Limit files found to those which match /re/
    -Version		Print the current $prog version and quit
+   -vreuse		Attempt to reuse existing versions of same element
    -/dbg=1		Verbose mode: show cleartool cmds as they run
 Notes:
     All flags may be abbreviated to their shortest unique name.
@@ -95,14 +96,11 @@ my(%opt, %xfer);
 		$File::Find::prune = 1;
 		return;
 	    }
-# contribution by unagler 011212, turned off for now (breaks -rm)
-=pod
 	    # Keep directories in the list only if they're empty.
 	    opendir(DIR, $_) || warn "$prog: Error: $_: $!";
 	    my @entries = readdir DIR;
 	    closedir(DIR);
 	    $xfer{$path} = $path if @entries == 2;
-=cut
 	} elsif (! -e _) {
 	    die "$prog: Error: no such file or directory: $path\n";
 	} else {
@@ -124,8 +122,8 @@ local $Getopt::Long::ignorecase = 0;  # global override for dumb default
 }
 GetOptions(\%opt, qw(sbase=s dbase=s flist=s label|mklabel=s lbmods map
 		     Narrow=s@
-		     ci cr ctime follow force reuse rellinks rmname stop
-		     ignore_co overwrite_co
+		     ci cr ctime follow force rellinks rmname stop
+		     reuse vreuse ignore_co overwrite_co
 		     help no ok quiet yes
 		     summary verbose=i vp Version
 )) || exit 1;
@@ -138,6 +136,7 @@ usage("-sbase is a required flag") if !$opt{sbase};
 usage("-dbase is a required flag") if !$opt{dbase};
 usage("-force and -stop are mutually exclusive") if $opt{force} && $opt{stop};
 usage("-yes and -no are mutually exclusive") if $opt{yes} && $opt{no};
+usage("-vreuse requires -label") if $opt{vreuse} && !$opt{label};
 
 # Implement the -summary functionality.
 if ($opt{summary}) {
@@ -162,7 +161,6 @@ if (!exists($opt{verbose}) || $opt{verbose} == 1) {
     ClearCase::Argv->dbglevel(1);
 }
 
-ClearCase::Argv->ipc(1) unless ClearCase::Argv->ctcmd(1);
 # Create the object we'll be working with.
 my $sync = ClearCase::SyncTree->new;
 
@@ -177,6 +175,21 @@ $opt{sbase} =~ s%\\%/%g if MSWIN;
 
 # Suppress blathering on stdout from cleartool if asked.
 ClearCase::Argv->quiet(1) if $opt{quiet};
+
+# Support incremental label families (ClearCase::Wrapper::MGi)
+if ($opt{label}) {
+    my $ct = $sync->clone_ct({autofail=>0, stderr=>0});
+    my $dvob = $ct->desc(['-s'], "vob:$opt{dbase}")->qx;
+    my $lbtype = "lbtype:$opt{label}\@$dvob";
+    my ($inclb) = grep s/-> (lbtype:.*)$/$1/,
+                               $ct->desc([qw(-s -ahl EqInc)], $lbtype)->qx;
+    if ($inclb) {
+        die "$prog: Error: incremental label types must be unlocked\n"
+	                       if $ct->lslock(['-s'], $lbtype, $inclb)->qx;
+	$inclb =~ s/^lbtype:(.*)@.*$/$1/;
+	$sync->inclb($inclb);
+    }
+}
 
 if ($opt{flist}) {
     #usage("-flist and -map are mutually exclusive") if $opt{map};
@@ -199,8 +212,6 @@ if ($opt{flist}) {
 	die "$prog: Error: to-file '$to' not under $opt{dbase}\n"
 				if $to !~ m%^$opt{dbase}%;
 	if (-d $from) {
-	    next;	# suppress unagler's contribution (breaks -rm)
-	    # Keep directories in the list only if they're empty.
 	    opendir(DIR, $from) || warn "$prog: Error: $from: $!";
 	    my @entries = readdir DIR;
 	    closedir(DIR);
@@ -229,7 +240,15 @@ if ($opt{map}) {
 	$xfer{$from} = $to;
     }
 } elsif (!$opt{flist}) {
-    push(@ARGV, $opt{sbase}) if !@ARGV && !%xfer;
+    if (@ARGV) {
+        if (-r $ARGV[0]) {
+	    $_ = File::Spec->rel2abs($_) for @ARGV;
+	} else {
+	    $_ = File::Spec->catfile($opt{sbase}, $_) for @ARGV;
+	}
+    } else {
+        push(@ARGV, $opt{sbase}) unless %xfer;
+    }
     # Convert warnings from within find() into fatal errors.
     local $SIG{__WARN__} = sub { die "$prog: Error: @_" };
     my %find_cfg;
@@ -247,8 +266,9 @@ if ($opt{map}) {
 
 # Allow the protect default to be overridden.
 $sync->protect(0) if $opt{nprotect};
-# Attempt element reconstitution.
+# Attempt element reconstitution, and/or version reuse.
 $sync->reuse(1) if $opt{reuse};
+$sync->vreuse(1) if $opt{vreuse};
 # The user may wish to leave existing checkouts in the dest base untouched ...
 $sync->ignore_co(1) if $opt{ignore_co};
 # ... or may wish to see them overwritten.
@@ -311,8 +331,8 @@ if ($opt{label}) {
 ## $sync->eltypemap('\.xml$' => 'compressed_file');
 
 # If nothing was done, exeunt stage left.
-exit $rc
-    unless $sync->get_addhash || $sync->get_modhash || $sync->get_sublist;
+exit $rc unless $sync->get_addhash || $sync->get_modhash
+		                   || $sync->get_sublist || $sync->_lsco;
 
 # Prompt the user before checkin if -ci not in use.
 if (! $opt{ci}) {
@@ -414,7 +434,7 @@ Not all options are described here, only those requiring elaboration
 beyond the C<-help> summary. Run C<synctree -help> for a full option
 summary.
 
-=over 4
+=over
 
 =item * I<-force, -stop>
 
@@ -472,6 +492,21 @@ one. They could conceivably even be of different element types.
 
 I<The B<-reuse> feature is not well tested and should still be considered
 B<experimental>.>
+
+=item * I<-vreuse>
+
+If two alternative releases of the same tree are imported in alternation,
+new versions are created at every step, as the result of even imports is
+systematically hidden by odd ones.
+
+This flag will check for suitable versions of the elements in their
+version tree, and apply there the label provided with the I<-label>
+option. This will considerably slow down the processing, but will avoid
+data duplication.
+
+Consider forcing the ipc mode of I<ClearCase::Argv>, with I<-/ipc=1>, and
+using the BranchOff feature, both of which are relevant to this kind of
+situation.
 
 =item * I<-Narrow>
 
@@ -532,11 +567,12 @@ thus:
 
 =head1 COMPARISONS
 
-Synctree is comparable to I<citree> and I<clearfsimport>. It is similar
-to citree but has more options and runs on both Windows and UNIX. It
-has the following advantages over clearfsimport:
+Synctree is comparable to I<citree> and I<clearfsimport>. It is
+similar to citree but has more options and runs on both Windows
+(including Cygwin) and UNIX. It has the following advantages over
+clearfsimport:
 
-=over 4
+=over
 
 =item *
 
@@ -567,6 +603,13 @@ third pass would make another element of the same name, synctree can
 optionally (I<-reuse>) make a link to the existing file instead of
 creating a new element which might be considered an "evil twin".
 
+=item *
+
+Synctree has support for I<version reuse>. In conjunction with
+labeling the results, importing a new version may be skipped by
+labeling instead an existing suitable one, even if not currently
+selected.
+
 =back
 
 However, unless you need one of the above features the supported,
@@ -576,7 +619,7 @@ clearfsimport; check current documentation.
 
 =head1 BUGS
 
-=over 4
+=over
 
 =item *
 
@@ -604,13 +647,18 @@ commands to be printed as they are run (this is actually a feature of
 the Argv module on which I<synctree> is built). Please run in this mode
 and include all output when reporting problems.
 
+Note also the I<-/ipc=1> flag, which uses a common background
+cleartool process, for improved performance.
+In this mode, cleartool commands are prefixed with C<=&gt;> instead of
+the default C<+>.
+
 =head1 AUTHOR
 
 David Boyce <dsbperl AT boyski.com>
 
 =head1 COPYRIGHT
 
-Copyright (c) 2000-2004 David Boyce. All rights reserved.  This Perl
+Copyright (c) 2000-2010 David Boyce. All rights reserved.  This Perl
 program is free software; you may redistribute and/or modify it under
 the same terms as Perl itself.
 
