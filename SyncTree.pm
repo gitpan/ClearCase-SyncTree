@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.54';
+$VERSION = '0.55';
 
 require 5.004;
 
@@ -91,7 +91,8 @@ sub ct {
 sub clone_ct {
     my $self = shift;
     my $ct = $self->ct->clone(@_);
-    my $af = $self->ct->autofail;
+    my $af = $self->ct->autofail
+          unless $_[0] and (ref($_[0]) eq 'HASH') and exists $_[0]->{autofail};
     $ct->autofail($af) if $af && ref($af); #Cloning doesn't share the value
     return $ct;
 }
@@ -194,7 +195,7 @@ sub _lsprivate {
     my $implicit_dirs = shift;
     my $base = $self->dstbase;
     my $dv = $self->dstview;
-    my $ct = $self->clone_ct;
+    my $ct = $self->clone_ct({autofail=>0, stderr=>0});
     my @vp;
     for ($ct->argv('lsp', [qw(-oth -do -s -inv), "$base/.", '-tag', $dv])->qx) {
 	$_ = $self->normalize($_);

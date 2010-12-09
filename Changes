@@ -229,3 +229,6 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- file/symlink clashes handled
 	- clone preserves the value of autofail
 	- NOTE: all work from 0.48 to here courtesy of Marc Girod.
+
+0.55 Thu Dec  9 14:37:57 GMTST 2010
+        - fix to autofail cloning, especiallay in _lsprivate
