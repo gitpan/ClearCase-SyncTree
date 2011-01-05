@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.55';
+$VERSION = '0.56';
 
 require 5.004;
 
@@ -80,7 +80,7 @@ sub ct {
     my $self = shift;
     return $self->{ST_CT} if $self->{ST_CT};
     if (!defined(wantarray)) {
-	my $ct = ClearCase::Argv->new({-autochomp=>1, -outpathnorm=>1});
+	my $ct = ClearCase::Argv->new({autochomp=>1, outpathnorm=>1});
 	$ct->syxargs($ct->qxargs);
 	$self->{ST_CT} = $ct;
     }
@@ -354,7 +354,7 @@ sub _mkbase {
 	my $mbase = $self->dstbase;
 	my $dvob = $self->dstvob;
 	(my $dext = $mbase) =~ s%(.*?$dvob)/.*%$1%;
-	my $ct = $self->clone_ct({-stdout=>0, -stderr=>0});
+	my $ct = $self->clone_ct({stdout=>0, stderr=>0});
 	$ct->autofail(0);	# can't be done above, will be lost.
 	while (1) {
 	    last if length($mbase) <= length($dext);
@@ -529,17 +529,18 @@ sub ccsymlink {
     my $dst = shift;
     return 1 if -l $dst;
     return 0 unless MSWIN || CYGWIN;
-    my $ct = new ClearCase::Argv({autochomp=>1});
+    my $ct = new ClearCase::Argv({autochomp=>1, stderr=>0});
     return $ct->des([qw(-fmt %m)], $dst)->qx eq 'symbolic link';
 }
 
 # readlink might work under some conditions (CC version, mount options, ...)
 sub readcclink {
     my $dst = shift;
-    return $_ if $_ = readlink $dst;
-    return '' unless MSWIN || CYGWIN;
+    my $ret = readlink $dst;
+    return $ret if $ret || !(MSWIN || CYGWIN);
     my $ct = new ClearCase::Argv({autochomp=>1});
-    my $ret = $ct->ls($dst)->qx;
+    $ret = $ct->ls($dst)->qx;
+    $ret =~ s%\\%/%g if MSWIN;
     return (($ret =~ s/^.*? --> (.*)$/$1/)? $ret : '');
 }
 
@@ -574,7 +575,7 @@ sub _needs_update {
 sub checkcs {
     my $self = shift;
     my($dest) = @_;
-    my $ct = ClearCase::Argv->new({-autofail=>1, -autochomp=>1});
+    my $ct = ClearCase::Argv->new({autofail=>1, autochomp=>1});
     my $pwd = getcwd;
     $ct->_chdir($dest) || die "$0: Error: $dest: $!";
     $dest = getcwd;
@@ -619,7 +620,7 @@ sub analyze {
     # Last, check for subtractions but only if asked - it's potentially
     # expensive and error-prone.
     return unless $self->remove;
-    my(%dirs, %files, @xfiles);
+    my(%dirs, %files, %xfiles);
     my $wanted = sub {
 	my $path = $File::Find::name;
 	return if $path eq $dbase;
@@ -643,9 +644,9 @@ sub analyze {
     }
     for (sort keys %files) {
 	next if $self->{ST_SRCMAP}->{$_} && !$self->{ST_SRCMAP}->{$_}->{dst};
-	push(@xfiles, $files{$_}) if !$dst2src{$_};
+	$xfiles{$files{$_}}++ if !$dst2src{$_};
     }
-    $self->{ST_SUB}->{exfiles} = \@xfiles;
+    $self->{ST_SUB}->{exfiles} = \%xfiles;
     $self->{ST_SUB}->{dirs} = \%dirs;
 }
 
@@ -670,7 +671,7 @@ sub preview {
 	}
     }
     if ($self->remove && $self->{ST_SUB}) {
-	my @exfiles = @{$self->{ST_SUB}->{exfiles}};
+	my @exfiles = sort keys %{$self->{ST_SUB}->{exfiles}};
 	$subs = @exfiles;
 	print "Subtracting $subs elements:\n" if $subs;
 	for (@exfiles) {
@@ -768,7 +769,7 @@ sub skimdir {
     my %ok = map {$_ => 1} grep s%$flt%$1%, keys %{$self->{ST_SRCMAP}};
     for (@f) {
 	my $f = $pfx . $_;
-	push @{$self->{ST_SUB}->{exfiles}}, join('/', $dst, $_) unless $ok{$f};
+	$self->{ST_SUB}->{exfiles}->{join('/', $dst, $_)}++ unless $ok{$f};
     }
 }
 
@@ -777,7 +778,8 @@ sub reusemkdir {
     my ($self, $dref, $rref) = @_;
     my (%found, $reused, %dfound);
     my $snapview = $self->snapdest;
-    my $vt = ClearCase::Argv->lsvtree({autochomp=>1}, [qw(-a -s -nco)]);
+    my $vt = ClearCase::Argv->lsvtree({autochomp=>1, stderr=>0},
+				                             [qw(-a -s -nco)]);
     my $ds = ClearCase::Argv->desc({stderr=>1},[qw(-s)]);
     my $dm = ClearCase::Argv->desc([qw(-fmt %m)]);
     my $rm = ClearCase::Argv->rm;
@@ -811,7 +813,7 @@ sub reusemkdir {
 		my $d = $dref->{$dst} eq '.'? '' : $dref->{$dst} . '/';
 		$self->skimdir($dst, $d) if $self->remove;
 		my $cmp = $self->no_cmp ? undef : $self->cmp_func;
-		my @keys = $d? grep m%^\Q$d\E%, keys %{$self->{ST_ADD}}
+		my @keys = sort $d? grep m%^\Q$d\E%, keys %{$self->{ST_ADD}}
 		                                      : keys %{$self->{ST_ADD}};
 		for my $e (@keys) {
 		    my $edst = join '/', $self->dstbase, $e;
@@ -819,7 +821,7 @@ sub reusemkdir {
 		    pop @intdir;
 		    if (@intdir) {
 			my $dd = $self->dstbase;
-			my $pf = $d;
+			my $pf = '';
 			while (my $id = shift @intdir) {
 			    $dd = join '/', $dd, $id;
 			    $pf = $pf . $id . '/';
@@ -1052,6 +1054,20 @@ sub add {
     }
 }
 
+# Tried to use Cwd::abs_path, but it behaves differently on Cygwin and UNIX
+sub absdst {
+    my ($self, $dir, $f) = @_;
+    if ($f =~ /^\./) {
+	my $sep = qr{[/\\]};
+	my @d = split $sep, $dir;
+	while ($f =~ s/^(\.\.?$sep)//) {
+	    pop @d if $1 =~ /^\.{2}/;
+	}
+	$dir = join '/', @d;
+    }
+    return File::Spec->catfile($dir, $f);
+}
+
 sub modify {
     my $self = shift;
     return if !keys %{$self->{ST_MOD}};
@@ -1064,7 +1080,7 @@ sub modify {
 	}
     }
     my $rm = $self->clone_ct('rmname');
-    my $ln = $rm->clone->prog('ln');
+    my $ln = $self->clone_ct('ln');
     $ln->opts('-s', $ln->opts);
     my $lsco = ClearCase::Argv->lsco([qw(-s -d -cview)]);
     my $comparator = $self->no_cmp ? undef : $self->cmp_func;
@@ -1079,15 +1095,14 @@ sub modify {
 	        # file.
 	        # Build up the path of the destination, in such a way that it
 	        # may be found, or not, in the hash.
-	        use Cwd 'abs_path';
 		my $dangling;
 		my $sep = qr%[/\\]%;
 		my $dst1 = $dst;
 	        while (ccsymlink($dst1)) {
 		    my $tgt = readcclink $dst1;
 		    my $dir = dirname $dst1;
-		    $tgt = abs_path(File::Spec->catfile($dir, $tgt))
-		                                         if $tgt =~ m%^[^/\\]%;
+		    $tgt = $self->absdst($dir, $tgt) unless $tgt =~ m%^[/\\]%;
+		    $tgt =~ s%\\%/%g if MSWIN;
 		    if (-e $tgt) {
 			$dst1 = $tgt;
 		    } else {
@@ -1119,6 +1134,7 @@ sub modify {
 		    $self->branchco(1, $dir1)
 		              unless ($dir eq $dir1) || $lsco->args($dir1)->qx;
 		    $self->clone_ct->mv($dst1, $dst)->system;
+		    delete $self->{ST_SUB}->{exfiles}->{$dst1}; #done already
 		    if (!$self->_needs_update($src, $dst, $comparator)) {
 			delete $self->{ST_MOD}->{$key};
 			push @del, $key;
@@ -1169,14 +1185,18 @@ sub subtract {
     return unless $self->{ST_SUB};
     my $ct = $self->clone_ct;
     my %checkedout = map {$_ => 1} $self->_lsco;
-    my @exfiles = @{$self->{ST_SUB}->{exfiles}};
-    my %dirs = %{$self->{ST_SUB}->{dirs}};
-    for my $dad (map {dirname($_)} @exfiles) {
-	$self->branchco(1, $dad) if !$checkedout{$dad}++;
+    my (@exfiles, $flt, %seen);
+    for (sort keys %{$self->{ST_SUB}->{exfiles}}) {
+	next if $flt && /^$flt/; # ignore entries under removed dirs
+	push @exfiles, $_ unless $seen{$_}++;
+	$flt = $_ if -d $_;
     }
-    my $r_cmnt = $self->comment;
-    # -force for checkedouts, in case reuse brought some hardlinks back
-    $ct->argv(qw(rmname -f), @{$r_cmnt}, @exfiles)->system if @exfiles;
+    for my $dad (map {dirname($_)} @exfiles) {
+	$self->branchco(1, $dad) unless $checkedout{$dad}++;
+    }
+    # Will fail for checkedouts (all created in this session!) or unreachable
+    $ct->rm($self->comment, @exfiles)->system if @exfiles;
+    my %dirs = %{$self->{ST_SUB}->{dirs}}; # Dirs which existed originally
     my @exdirs;
     while (1) {
 	for (sort {$b cmp $a} keys %dirs) {
@@ -1194,9 +1214,9 @@ sub subtract {
 	    $self->branchco(1, $dad) if !$checkedout{$dad}++;
 	}
 	if (my @co = $ct->argv('lsco', [qw(-s -cvi -d)], @exdirs)->qx) {
-	    $ct->argv('ci', $r_cmnt, @co)->system;
+	    $ct->ci($self->comment, @co)->system;
 	}
-	$ct->argv('rmname', $r_cmnt, @exdirs)->system;
+	$ct->rmname($self->comment, @exdirs)->system;
 	@exdirs = ();
     }
 }
@@ -1207,8 +1227,8 @@ sub label {
     return unless $lbtype;
     my $dbase = $self->dstbase;
     my $ct = $self->clone_ct({autochomp=>0});
-    my $ctq = $ct->clone({stdout=>0});
-    my $ctbool = $ctq->clone({autofail=>0, stderr=>0, autochomp=>0});
+    my $ctq = $self->clone_ct({stdout=>0});
+    my $ctbool = $self->clone_ct({autofail=>0, stdout=>0, stderr=>0});
     my $dvob = $self->dstvob;
     my $locked;
     if ($ctbool->lstype(['-s'], "lbtype:$lbtype\@$dvob")->system) {
@@ -1270,7 +1290,7 @@ sub get_modhash {
 sub get_sublist {
     my $self = shift;
     if ($self->{ST_SUB}) {
-	return @{$self->{ST_SUB}->{exfiles}};
+	return sort keys %{$self->{ST_SUB}->{exfiles}};
     } else {
 	return ();
     }
@@ -1313,7 +1333,9 @@ sub checkin {
     my @todo = grep {m%^\Q$mbase%} keys %checkedout;
     @todo = grep {!exists($self->{ST_PRE}->{$_})} @todo if $self->ignore_co;
     unshift(@todo, $dad) if $checkedout{$dad};
-    $ct->argv('ci', [@cmnt, '-ide', @ptime], sort @todo)->system if @todo;
+    # Sort reverse in case the checked in versions are not selected by the view
+    $ct->argv('ci', [@cmnt, '-ide', @ptime], sort {$b cmp $a} @todo)->system
+                                                                      if @todo;
     # Fix the protections of the target files if requested. Unix files
     # get careful consideration of bitmasks etc; Windows files just get
     # promoted to a+x if their extension looks executable.
@@ -1364,7 +1386,7 @@ sub cleanup {
     my $self = shift;
     my $mbase = $self->_mkbase;
     my $dad = dirname($mbase);
-    my $ct = $self->clone_ct({-autofail=>0});
+    my $ct = $self->clone_ct({autofail=>0});
     my @vp = $self->_lsprivate(1);
     for (sort {$b cmp $a} @vp) {
 	if (-d $_) {

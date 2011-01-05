@@ -228,7 +228,18 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- process whole paths brought in while reusing directory elements
 	- file/symlink clashes handled
 	- clone preserves the value of autofail
-	- NOTE: all work from 0.48 to here courtesy of Marc Girod.
 
 0.55 Thu Dec  9 14:37:57 GMTST 2010
-        - fix to autofail cloning, especiallay in _lsprivate
+        - fix to autofail cloning, especially in _lsprivate
+
+0.56 Thu Dec 23 22:51:40 GMTST 2010
+        - removed spurious cleartool errors, mostly under Windows/Cygwin
+	- fixed various internal bugs: readcclink was altering its call context
+	- absdst doesn't use Cwd::abs_path: behaves differently on UNIX and Cygwin
+	- use of ClearCase::Argv::clone disturbs the ipc reference count
+	- fixed bug in reusemkdir, which resulted in wrong removals
+	- skip attempting to remove entries below removed dirs, or the same twice
+	- checkin in reverse sort order, to cope with 'not selected by view'
+	- removed from subtract list any symlink already renamed
+	- restored less verbosity: no mklabel events
+	- NOTE: all work from 0.48 to here courtesy of Marc Girod.
