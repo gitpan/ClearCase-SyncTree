@@ -1,6 +1,3 @@
-[ NOTE - I won't put much effort into supporting SyncTree any more, for
-reasons described below.]
-
 			WHAT IT IS
 
 This is a program/module for bringing a set of files under ClearCase
@@ -21,7 +18,7 @@ Full documentation for both module and program is provided as inline
 POD format.
 
 Note that there's also a Rational-supported CC program 'clearfsimport'
-which does much of what synctree does.
+which does part of what synctree does.
 
 			DIFFERENCES FROM CITREE
 
@@ -53,27 +50,33 @@ regular expression.
 4. A Perl API (ClearCase::SyncTree) is provided for custom tool
 development whereas clearfsimport is a command-line interface only.
 
-5. Synctree has experimental support for "element retention". I.e. if
-an element is added in one pass and then removed (rmnamed) in a
-subsequent pass, and if a third pass would make another element of the
-same name, synctree can optionally (with the -reuse flag) link to the
-existing element instead of creating what might be considered an "evil
-twin".
+5. Synctree supports "element retention". I.e. if an element is added
+in one pass and then removed (rmnamed) in a subsequent pass, and if a
+third pass would make another element of the same name, synctree can
+optionally (with the -reuse flag) link to the existing element instead
+of creating what might be considered an "evil twin".
 
-6. Clearfsimport has an unfortunate behavior relating to timestamps and
+6. Synctree supports "version reuse", i.e. is able to label and
+existing version, albeit not originally selected by the config spec,
+instead of creating a duplicate of it. This feature is especially
+useful if one imports the 'merge result' of two releases imported
+previously. In such a case, it is impossible to select a single
+baseline which would be optimal for all the elements.
+
+7. Clearfsimport has an unfortunate behavior relating to timestamps and
 repeated imports and -nsetevent; see this URL:
 <http://www.cmcrossroads.com/cgi-bin/cmwiki/view/CM/BccFaq1_2_16> for
 details.
 
-7. SyncTree supports branching off the root of the version tree
+8. SyncTree supports branching off the root of the version tree
 instead of from the selected version, as driven by the BranchOff view
 attribute in the config spec. Clearfsimport cannot be made to respect
 this strategy.
 
-8. And of course SyncTree is freeware, with all the attendant
+9. And of course SyncTree is freeware, with all the attendant
 advantages (fix it yourself) and disadvantages (fix it yourself).
 
-But in most cases a supported, integrated solution is to be preferred
+But in some cases a supported, integrated solution is to be preferred
 and clearfsimport also has advantages over synctree which aren't
 discussed in depth here, such as mastership handling (-master) and the
 ability to go somewhat deeper into the database than an aftermarket
@@ -84,10 +87,10 @@ documentation for its details.
 			PLATFORM NOTES
 
 This package is believed to work on all ClearCase platforms including
-Windows. Note, however, that my only test environments are Solaris 9
-and Windows XP, Perl 5.8.x. It worked on Solaris 7 and NT 4.0 with
-Perl 5.6.0 when I last worked there but I have no way to check these or
-any other platforms now.
+Windows, and even Cygwin. Note, however, that the test environments
+are mostly Solaris 10 and Windows Vista, Perl 5.8.8 to 5.12.0. It
+worked on Solaris 7 and NT 4.0 with Perl 5.6.0 when I last worked
+there but I have no way to check these or any other platforms now.
 
 A sample "synctree.bat" script is provided showing one method of
 invocation on Windows. Other ways (for instance using the .pl file

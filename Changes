@@ -242,4 +242,23 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- checkin in reverse sort order, to cope with 'not selected by view'
 	- removed from subtract list any symlink already renamed
 	- restored less verbosity: no mklabel events
+
+0.57 Fri Apr 15 15:16:02 GMTDT 2011
+        - apply even equivalent fixed labels with -rep, to allow for replay
+	- if label existed, check labeled versions first
+	- skip unchanged labeled versions from recursive labeling
+	- symlinks in srcbase on Windows/Cygwin, if srcbase in a vob
+	- import and remove dangling links
+	- skip symlink to directory in file reuse
+	- check in from source: do not attempt to check in again
+	- cleanup if branchoff root, remove orphaned branches at uncheckout
+	- file in source, dangling link in dest (maybe second to same): mkelem
+	- fail instead of die in a few more cases (cleanup)
+	- fixes to reusemkdir: reuse is per element, and private dirs may be skipped
+	- skip symlinks to directories in resurrected directories
+	- fix a bug with mkpath syntax resulting in creating 511 and 0 directories
+	- fix to reuse of empty directories
+	- fix in pruning of versions in vtree
+	- arguments given with relative paths must point under srcbase
+	- remove symlinks to directories under dstbase, which could fool synctree
 	- NOTE: all work from 0.48 to here courtesy of Marc Girod.
