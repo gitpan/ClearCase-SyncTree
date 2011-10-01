@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.57';
+$VERSION = '0.58';
 
 require 5.004;
 
@@ -15,7 +15,7 @@ use File::Path;
 use File::Spec 0.82;
 use ClearCase::Argv 1.34 qw(chdir);
 
-use constant MSWIN => $^O =~ /MSWin32|Windows_NT/i ? 1 : 0;
+use constant MSWIN => $^O =~ /MSWin|Windows_NT/i ? 1 : 0;
 use constant CYGWIN => $^O =~ /cygwin/i ? 1 : 0;
 
 my $lext = '.=lnk=';	# special extension for pseudo-symlinks
@@ -584,7 +584,7 @@ sub analyze {
 	if (! ecs($dst) && ! ccsymlink($dst)) {
 	    $self->{ST_ADD}->{$_}->{src} = $src;
 	    $self->{ST_ADD}->{$_}->{dst} = $dst;
-	} elsif (! -d $src) {
+	} elsif (! -d $src || src_slink($src)) {
 	    if ($self->_needs_update($src, $dst, $comparator)) {
 		$self->{ST_MOD}->{$_}->{src} = $src;
 		$self->{ST_MOD}->{$_}->{dst} = $dst;
@@ -701,37 +701,41 @@ sub branchco {
     my $rc;
     if ($self->{branchoffroot}) {
 	foreach my $e (@ele) {
-	    my $sel = $ct->argv('ls', '-d', "$e")->autochomp(1)->qx;
+	    my $sel = $ct->ls(['-d'], $e)->autochomp(1)->qx;
 	    if ($sel =~ /^(.*?) +Rule:.*-mkbranch (.*?)\]?$/) {
 		my ($ver, $bt) = ($1, $2);
-		my $main = ($ct->argv('lsvtree', $e)->autochomp(1)->qx)[0];
-		$main =~ s%^[^@]*\@\@[\\/](.*)\r?$%$1%;
+		my $sil = $self->clone_ct({stdout=>0, stderr=>0});
+		my $main = 'main';
+		if ($sil->des(['-s'], "$e\@\@/main/0")->system) {
+		    $main = ($ct->lsvtree($e)->autochomp(1)->qx)[0];
+		    $main =~ s%^[^@]*\@\@[\\/](.*)\r?$%$1%;
+		}
 		my $re = $self->pbrtype($bt) ?
 		  qr([\\/]${main}[\\/]$bt[\\/]\d+$) : qr([\\/]$bt[\\/]\d+$);
 		if ($ver =~ m%$re%) {
-		    $rc |= $ct->argv('co', $self->comment, "$e")->system;
+		    $rc |= $ct->co($self->comment, $e)->system;
 		} else {
-		    my $r = $ct->argv('mkbranch', $self->comment,
-				      '-ver', "/${main}/0", $bt, "$e")->system;
+		    my $r = $ct->mkbranch([@{$self->comment}, '-ver',
+					      "/${main}/0", $bt], $e)->system;
 		    if ($r) {
 			$rc = 1;
 		    } else {
 			if ($ver !~ m%\@\@[\\/]${main}[\\/]0$%) {
 			    $rc |= $dir ?
-				$ct->argv('merge', '-to',
-					  $e, $ver)->stdout(0)->system :
-				$ct->argv('merge', '-ndata', '-to', $e,
-					  $ver)->stdout(0)->system;
+				$ct->merge(['-to', $e],
+					   $ver)->stdout(0)->system :
+				$ct->merge(['-ndata', '-to', $e],
+					   $ver)->stdout(0)->system;
 			    unlink("$e.contrib");
 			}
 		    }
 		}
 	    } else {
-		$rc |= $ct->argv('co', $self->comment, "$e")->system;
+		$rc |= $ct->co($self->comment, $e)->system;
 	    }
 	}
     } else {
-	$rc = $ct->argv('co', $self->comment, @ele)->system;
+	$rc = $ct->co($self->comment, @ele)->system;
     }
     return $rc;
 }
@@ -744,6 +748,7 @@ sub rmdirlinks {
 	my $dad = dirname $_;
 	$self->branchco(1, $dad) unless $lsco->args($dad)->qx;
 	$self->clone_ct->rm($_)->system;
+	delete $self->{ST_SUB}->{exfiles}->{$_}; #If it is there
     }
 }
 
@@ -1163,7 +1168,7 @@ sub modify {
 		my $dir = dirname($dst);
 		$self->branchco(1, $dir) unless $lsco->args($dir)->qx;
 		$self->clone_ct->rm($dst)->system; #remove the first symlink
-		if ($dangling) {
+		if ($dangling || !$self->{ST_SUB}->{exfiles}->{$dst1}) {
 		    if (!copy($src, $dst)) {
 			warn "$0: Error: $dst: $!\n";
 			$rm->fail;
@@ -1183,12 +1188,6 @@ sub modify {
 		    if (!$self->_needs_update($src, $dst, $comparator)) {
 			delete $self->{ST_MOD}->{$key};
 			push @del, $key;
-		    }
-		    (my $k = $dst1) =~ s%^$self->{ST_DSTBASE}$sep%%;
-		    if ($symlinks{$k}) {
-			my $d = $self->mkrellink($self->{ST_MOD}->{$k}->{src});
-			$ln->args($d, $dst1)->system;
-			delete $symlinks{$k};
 		    }
 		}
 	    }
@@ -1222,7 +1221,11 @@ sub modify {
 	    if (!$checkedout{$dad}) {
 		$checkedout{$dad} = 1 if ! $self->branchco(1, $dad);
 	    }
-	    $rm->args($lnk)->system;
+	    if (!$rm->args($lnk)->system) {
+	        my @fil = grep /^\Q$lnk\E/, keys %{$self->{ST_SUB}->{exfiles}};
+	        delete @{$self->{ST_SUB}->{exfiles}}{@fil};
+		delete $self->{ST_SUB}->{dirs}{$lnk};
+	    }
 	    $ln->args($txt, $lnk)->system;
 	}
     }
@@ -1232,40 +1235,45 @@ sub subtract {
     my $self = shift;
     return unless $self->{ST_SUB};
     my $ct = $self->clone_ct;
-    my %checkedout = map {$_ => 1} $self->_lsco;
-    my (@exfiles, $flt, %seen);
-    for (sort keys %{$self->{ST_SUB}->{exfiles}}) {
-	next if $flt && /^$flt/; # ignore entries under removed dirs
-	push @exfiles, $_ unless $seen{$_}++;
-	$flt = $_ if -d $_;
-    }
-    for my $dad (map {dirname($_)} @exfiles) {
-	$self->branchco(1, $dad) unless $checkedout{$dad}++;
-    }
-    # Will fail for checkedouts (all created in this session!) or unreachable
-    $ct->rm($self->comment, @exfiles)->system if @exfiles;
-    my %dirs = %{$self->{ST_SUB}->{dirs}}; # Dirs which existed originally
-    my @exdirs;
-    while (1) {
-	for (sort {$b cmp $a} keys %dirs) {
-	    next if $self->{ST_SRCMAP}->{$dirs{$_}};
-	    if (opendir(DIR, $_)) {
-		my @entries = readdir DIR;
-		closedir(DIR);
-		next if @entries > 2;
-		push(@exdirs, $_);
+    my %co = map {$_ => 1} $self->_lsco;
+    my $exnames = $self->{ST_SUB}->{exfiles}; # Entries to remove
+    my (%dir, %keep); # Directories respectively to inspect, and to keep
+    $dir{dirname($_)}++ for keys %{$exnames};
+    $dir{$_}++ for keys %{$self->{ST_SUB}->{dirs}}; # Existed originally
+    my $dbase = $self->dstbase;
+    for my $d (sort {$b cmp $a} keys %dir) {
+	next if $keep{$d};
+	my ($k) = ($d =~ m%^\Q$dbase\E/(.*)$%);
+	if ($self->{ST_SRCMAP}->{$k}) {
+	    delete $exnames->{$d};
+	    my $dad = $d;
+	    $keep{$dad}++ while $dad = dirname($dad) and $dad gt $dbase;
+	    next;
+	}
+	if (opendir(DIR, $d)) {
+	    my @entries = grep !/^\.\.?$/, readdir DIR;
+	    closedir(DIR);
+	    map { $_ = join('/', $d, $_) } @entries;
+	    if (grep { !$exnames->{$_} } @entries) { # Something not to delete
+		my $dad = $d;
+		$keep{$dad}++ while $dad = dirname($dad) and $dad gt $dbase;
+	    } else {
+		if (@entries) {
+		    my @co = grep {$co{$_}} @entries; # Checkin before removing
+		    $ct->ci($self->comment, @co)->system if @co;
+		    delete @$exnames{@entries}; # Remove the contents
+		}
+		$exnames->{$d}++; # Add the container
 	    }
 	}
-	last if !@exdirs;
-	for my $dad (map {dirname($_)} @exdirs) {
-	    $self->branchco(1, $dad) if !$checkedout{$dad}++;
-	}
-	if (my @co = $ct->argv('lsco', [qw(-s -cvi -d)], @exdirs)->qx) {
-	    $ct->ci($self->comment, @co)->system;
-	}
-	$ct->rmname($self->comment, @exdirs)->system;
-	@exdirs = ();
     }
+    delete @$exnames{keys %keep};
+    my @exnames = keys %{$exnames};
+    for my $dad (map {dirname($_)} @exnames) {
+	$self->branchco(1, $dad) unless $co{$dad}++;
+    }
+    # Will fail for checkedouts (all created in this session!) or unreachable
+    $ct->rm($self->comment, @exnames)->system if @exnames;
 }
 
 sub label {

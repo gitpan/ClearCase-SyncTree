@@ -261,4 +261,11 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- fix in pruning of versions in vtree
 	- arguments given with relative paths must point under srcbase
 	- remove symlinks to directories under dstbase, which could fool synctree
+
+0.58 Sat Oct  1 00:25:57 EDT 2011
+        - branchco optimization: avoid lsvtree if possible
+	- subtract: new implementation--remove only the top of directory trees
+	- rmdirlinks: remove entries from the remove list after removing them
+	- remove directories on the way of symlinks
+	- symlink replaced with file, while keeping the original target
 	- NOTE: all work from 0.48 to here courtesy of Marc Girod.
