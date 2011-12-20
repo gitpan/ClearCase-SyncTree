@@ -268,4 +268,11 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- rmdirlinks: remove entries from the remove list after removing them
 	- remove directories on the way of symlinks
 	- symlink replaced with file, while keeping the original target
+
+0.59 Sun Dec 11 22:11:05 GMTST 2011
+	- reuse failed for the root of dstbase
+	- reuse failed for intermediate dirs, missing from a restored version
+	- silence spurious error messages in _lsco, testing private directories
+	- subtract: elements with no selected version, and checkouts in other views
+	- From James Anderson: in mvfsdrive, always open the Win rgy in read-only mode
 	- NOTE: all work from 0.48 to here courtesy of Marc Girod.

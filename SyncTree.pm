@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.58';
+$VERSION = '0.59';
 
 require 5.004;
 
@@ -191,8 +191,9 @@ sub _lsprivate {
 
 sub _lsco {
     my $self = shift;
-    my $base = $self->dstbase;
+    my $base = $self->_mkbase;
     my $ct = $self->clone_ct;
+    my $sil = $self->clone_ct(stderr=>0, autofail=>0);
     my %co;
     for ($ct->lsco([qw(-s -cvi -a)], $base)->qx) {
 	$_ = $self->normalize($_);
@@ -200,7 +201,7 @@ sub _lsco {
     }
     for my $dir (@{$self->{ST_IMPLICIT_DIRS}}) {
 	my $dad = dirname($dir);
-	$co{$dad}++ if !$ct->lsco([qw(-s -cvi -d)], $dad)->stdout(0)->system;
+	$co{$dad}++ if $sil->lsco([qw(-s -cvi -d)], $dad)->qx;
     }
     return wantarray? sort keys %co : scalar keys %co;
 }
@@ -208,25 +209,15 @@ sub _lsco {
 sub mvfsdrive {
     my $self = shift;
     if (MSWIN && ! $self->{ST_MVFSDRIVE}) {
-	use vars '%RegHash';
-	require Win32::TieRegistry;
-	Win32::TieRegistry->import('TiedHash', '%RegHash');
-	$self->{ST_MVFSDRIVE} = $RegHash{LMachine}->{SYSTEM}->
-		{CurrentControlSet}->{Services}->{Mvfs}->{Parameters}->{drive};
-	# Apparently one must be a local admin to read the HKLM area,
-	# so we fall back to a slower, dumber way if the above fails.
-	# There's also Win32::DriveInfo but that isn't bundled with AS
-	# or Rational Perls.
-	if (! $self->{ST_MVFSDRIVE}) {
-	    for (qx(net use)) {
-		next unless m%\s([D-Z]):\s%i;
-		if (-f "$1:/.specdev") {
-		    $self->{ST_MVFSDRIVE} = $1;
-		    last;
-		}
-	    }
-	}
-	die "$0: Error: unable to find MVFS drive" unless $self->{ST_MVFSDRIVE};
+       no strict 'subs';
+       use vars '$Registry';
+       require Win32::TieRegistry;
+       # HKLM is read-only for non-admins so open read-only
+       Win32::TieRegistry->import('TiedRef', '$Registry', qw(KEY_READ));
+       my $LMachine = $Registry->Open('LMachine', {Access => KEY_READ});
+       $self->{ST_MVFSDRIVE} = $LMachine->{SYSTEM}->
+	        {CurrentControlSet}->{Services}->{Mvfs}->{Parameters}->{drive};
+       die "$0: Error: unable to find MVFS drive" unless $self->{ST_MVFSDRIVE};
     }
     return $self->{ST_MVFSDRIVE};
 }
@@ -361,12 +352,10 @@ sub _mkbase {
 	my $mbase = $self->dstbase;
 	my $dvob = $self->dstvob;
 	(my $dext = $mbase) =~ s%(.*?$dvob)/.*%$1%;
-	my $ct = $self->clone_ct({stdout=>0, stderr=>0});
-	$ct->autofail(0);	# can't be done above, will be lost.
+	my $ct = $self->clone_ct({stdout=>0, stderr=>0, autofail=>0});
 	while (1) {
 	    last if length($mbase) <= length($dext);
-	    last if -d $mbase &&
-			! $ct->argv('desc', ['-s'], "$mbase/.@@")->system;
+	    last if -d $mbase && ! $ct->desc(['-s'], "$mbase/.@@")->system;
 	    push(@{$self->{ST_IMPLICIT_DIRS}}, $mbase);
 	    $mbase = dirname($mbase);
 	}
@@ -684,10 +673,10 @@ sub pbrtype {
     my $self = shift;
     my $bt = shift;
     my $ct = $self->clone_ct;
-    my $base = $self->dstbase;
+    my $vob = $self->{ST_DSTVOB};
     if (!defined($self->{ST_PBTYPES}->{$bt})) {
-	my $tc = $ct->argv('desc', qw(-fmt \%[type_constraint]p),
-			   "brtype:$bt\@$base")->qx;
+	my $tc = $ct->des([qw(-fmt %[type_constraint]p)],
+			                              "brtype:$bt\@$vob")->qx;
 	$self->{ST_PBTYPES}->{$bt} = ($tc =~ /one version per branch/);
     }
     return $self->{ST_PBTYPES}->{$bt};
@@ -861,7 +850,7 @@ sub reusemkdir {
 		  while (my $id = shift @intdir) {
 		    $dd = join '/', $dd, $id;
 		    $pf = $pf . $id . '/';
-		    $self->skimdir($dd, $pf) unless $dfound{$dd}++;
+		    $self->skimdir($dd, $pf) if -d $dd && !$dfound{$dd}++;
 		  }
 		}
 		# Problem: does it match the type under srcbase?
@@ -1254,7 +1243,8 @@ sub subtract {
 	    my @entries = grep !/^\.\.?$/, readdir DIR;
 	    closedir(DIR);
 	    map { $_ = join('/', $d, $_) } @entries;
-	    if (grep { !$exnames->{$_} } @entries) { # Something not to delete
+	    if (grep { !$exnames->{$_} and $ct->ls(['-s'], $_)->qx !~ /\@$/}
+		  @entries) { # Something not to delete--some version selected
 		my $dad = $d;
 		$keep{$dad}++ while $dad = dirname($dad) and $dad gt $dbase;
 	    } else {
@@ -1272,8 +1262,8 @@ sub subtract {
     for my $dad (map {dirname($_)} @exnames) {
 	$self->branchco(1, $dad) unless $co{$dad}++;
     }
-    # Will fail for checkedouts (all created in this session!) or unreachable
-    $ct->rm($self->comment, @exnames)->system if @exnames;
+    # Force because of possible checkouts in other views. Fail for unreachable
+    $ct->rm([@{$self->comment}, '-f'], @exnames)->system if @exnames;
 }
 
 sub label {
