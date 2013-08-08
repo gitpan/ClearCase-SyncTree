@@ -275,4 +275,8 @@ Revision history for Perl extension ClearCase::SyncTree.
 	- silence spurious error messages in _lsco, testing private directories
 	- subtract: elements with no selected version, and checkouts in other views
 	- From James Anderson: in mvfsdrive, always open the Win rgy in read-only mode
+
+0.60 Sun Jul  8 18:26:40 IST 2012
+        - fixed one spurious warning: sort (...) interpreted as function
+	- subtract: added a test to fix a minor internal bug
 	- NOTE: all work from 0.48 to here courtesy of Marc Girod.

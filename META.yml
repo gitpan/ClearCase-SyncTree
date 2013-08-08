@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               ClearCase-SyncTree
-version:            0.59
+version:            0.60
 abstract:           ~
 author:  []
 license:            unknown

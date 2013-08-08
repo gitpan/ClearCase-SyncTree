@@ -1,6 +1,6 @@
 package ClearCase::SyncTree;
 
-$VERSION = '0.59';
+$VERSION = '0.60';
 
 require 5.004;
 
@@ -947,8 +947,8 @@ sub add {
 	    $ct->failm("$src: no such file or directory");
 	}
     }
-    my @candidates = sort ($self->_lsprivate(1),
-			   map { $_->{dst} } values %{$self->{ST_CI_FROM}});
+    my @candidates = sort $self->_lsprivate(1),
+			  map { $_->{dst} } values %{$self->{ST_CI_FROM}};
     return if !@candidates;
     # We'll be separating the elements-to-be into files and directories.
     my(%files, @symlinks, %dirs);
@@ -1233,7 +1233,7 @@ sub subtract {
     for my $d (sort {$b cmp $a} keys %dir) {
 	next if $keep{$d};
 	my ($k) = ($d =~ m%^\Q$dbase\E/(.*)$%);
-	if ($self->{ST_SRCMAP}->{$k}) {
+	if ($k and $self->{ST_SRCMAP}->{$k}) {
 	    delete $exnames->{$d};
 	    my $dad = $d;
 	    $keep{$dad}++ while $dad = dirname($dad) and $dad gt $dbase;
